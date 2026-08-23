@@ -217,6 +217,7 @@
     <ItemGroup>
       <Compile Include="..\SharedAssemblyInfo.cs" Link="SharedAssemblyInfo.cs" />
       <Compile Include="..\Shared\SharedPreUiCommandDispatcher.cs" Link="Shared\SharedPreUiCommandDispatcher.cs" />
+      <Compile Include="..\Shared\StartupBundleArguments.cs" Link="Shared\StartupBundleArguments.cs" />
     </ItemGroup>
 
     <ItemGroup>
@@ -269,6 +270,8 @@
       <Compile Include="Infrastructure\TrayService.cs" />
       <Compile Include="Infrastructure\MicaWindowHelper.cs" />
       <Compile Include="Infrastructure\MemoryTrimmer.cs" />
+      <Compile Include="Infrastructure\MaintenanceScheduler.cs" />
+      <Compile Include="Infrastructure\PowerConditions.cs" />
       <Compile Include="Infrastructure\EntrancePageTransition.cs" />
       <Compile Include="Infrastructure\DirectionalSlideTransition.cs" />
       <Compile Include="Infrastructure\MacOsNotificationBridge.cs" />

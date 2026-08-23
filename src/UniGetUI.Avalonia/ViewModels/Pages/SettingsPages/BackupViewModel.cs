@@ -9,6 +9,7 @@ using CommunityToolkit.Mvvm.Input;
 using UniGetUI.Avalonia.Infrastructure;
 using UniGetUI.Avalonia.Views;
 using UniGetUI.Avalonia.Views.Pages;
+using UniGetUI.Avalonia.Views.Pages.SettingsPages;
 using UniGetUI.Core.Data;
 using UniGetUI.Core.Logging;
 using UniGetUI.Core.Tools;
@@ -20,6 +21,7 @@ namespace UniGetUI.Avalonia.ViewModels.Pages.SettingsPages;
 public partial class BackupViewModel : ViewModelBase, IDisposable
 {
     public event EventHandler? RestartRequired;
+    public event EventHandler<Type>? NavigationRequested;
 
     public IReadOnlyList<string> InfoLines { get; } =
     [
@@ -75,6 +77,9 @@ public partial class BackupViewModel : ViewModelBase, IDisposable
     /* ─────────────── Local backup ─────────────── */
 
     [RelayCommand]
+    private void NavigateToScheduler() => NavigationRequested?.Invoke(this, typeof(Scheduler));
+
+    [RelayCommand]
     private void EnableLocalBackupChanged()
     {
         if (IsDisposed) return;
@@ -107,7 +112,7 @@ public partial class BackupViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private static Task DoLocalBackup(Visual? _) => DoLocalBackupStatic();
 
-    public static async Task DoLocalBackupStatic()
+    public static async Task<bool> DoLocalBackupStatic()
     {
         try
         {
@@ -137,11 +142,13 @@ public partial class BackupViewModel : ViewModelBase, IDisposable
             string filePath = Path.Combine(dirName, fileName);
             await File.WriteAllTextAsync(filePath, backupContents);
             Logger.ImportantInfo("Local backup saved to " + filePath);
+            return true;
         }
         catch (Exception ex)
         {
             Logger.Error("An error occurred while performing a LOCAL backup:");
             Logger.Error(ex);
+            return false;
         }
     }
 
@@ -292,7 +299,7 @@ public partial class BackupViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public static async Task DoCloudBackupStatic()
+    public static async Task<bool> DoCloudBackupStatic()
     {
         try
         {
@@ -300,11 +307,13 @@ public partial class BackupViewModel : ViewModelBase, IDisposable
             string bundle = await PackageBundlesPage.CreateBundle(packages);
             await GitHubCloudBackupService.UploadPackageBundleAsync(bundle);
             Logger.ImportantInfo("Cloud backup completed successfully.");
+            return true;
         }
         catch (Exception ex)
         {
             Logger.Error("An error occurred while performing a CLOUD backup:");
             Logger.Error(ex);
+            return false;
         }
     }
 

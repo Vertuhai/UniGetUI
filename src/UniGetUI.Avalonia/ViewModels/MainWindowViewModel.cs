@@ -457,6 +457,8 @@ public partial class MainWindowViewModel : ViewModelBase
             // Notifications and auto-update logic are handled by SoftwareUpdatesPage.WhenPackagesLoaded
         }
 
+        MaintenanceScheduler.Start();
+
         WindowsAppNotificationBridge.NotificationActivated += action =>
             Dispatcher.UIThread.Post(() => HandleNotificationActivation(action));
 
@@ -754,6 +756,12 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         NavigateTo(PageType.Bundles);
         await BundlesPage.OpenFromString(content, BundleFormatType.UBUNDLE, "GitHub Gist");
+    }
+
+    public async Task LoadBundleFromFileAsync(string path)
+    {
+        NavigateTo(PageType.Bundles);
+        await BundlesPage.OpenFromFile(path);
     }
 
     private async Task ShowAboutDialog()

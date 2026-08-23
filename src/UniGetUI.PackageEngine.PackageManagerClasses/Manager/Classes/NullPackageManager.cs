@@ -16,6 +16,10 @@ namespace UniGetUI.PackageEngine.Classes.Manager
 {
     public class NullPackageManager : IPackageManager
     {
+        public bool LastUpdatesListingFailed => false;
+
+        public bool LastInstalledListingFailed => false;
+
         public static NullPackageManager Instance = new();
         public ManagerProperties Properties { get; }
         public ManagerCapabilities Capabilities { get; }

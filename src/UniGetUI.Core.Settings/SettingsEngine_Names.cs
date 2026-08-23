@@ -106,6 +106,10 @@ public static partial class Settings
         DisableReleaseNotesOnUpdate,
         LastKnownBuildNumber,
         DisableAutoSoftwareRenderingOnGpuLessHosts,
+        UseSystemUIFont,
+        MaintenanceSchedules,
+        MaintenanceTaskLastRun,
+        MaintenanceTaskLastFailure,
         // NOTE: Set this to true to delegate package operations to Devolutions Agent broker
         // instead of using local UAC elevation. Change default here when ready for production.
         UseAgentBroker,
@@ -226,6 +230,10 @@ public static partial class Settings
             K.DisableReleaseNotesOnUpdate => "DisableReleaseNotesOnUpdate",
             K.LastKnownBuildNumber => "LastKnownBuildNumber",
             K.DisableAutoSoftwareRenderingOnGpuLessHosts => "DisableAutoSoftwareRenderingOnGpuLessHosts",
+            K.UseSystemUIFont => "UseSystemUIFont",
+            K.MaintenanceSchedules => "MaintenanceSchedules",
+            K.MaintenanceTaskLastRun => "MaintenanceTaskLastRun",
+            K.MaintenanceTaskLastFailure => "MaintenanceTaskLastFailure",
             K.UseAgentBroker => "UseAgentBroker",
 
             K.Test1 => "TestSetting1",

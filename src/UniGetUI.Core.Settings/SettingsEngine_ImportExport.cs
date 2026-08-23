@@ -37,6 +37,9 @@ public partial class Settings
                     "OperationHistory.json",
                     "WinGetAlreadyUpgradedPackages.json",
                     "WinGetUpgradeAttempts.json",
+                    "MaintenanceTaskLastRun.json",
+                    "MaintenanceTaskLastFailure.json",
+                    "MaintenanceSchedules.invalid",
                     "TelemetryClientToken",
                     "CurrentSessionToken",
                 }.Contains(Path.GetFileName(entry))
@@ -62,6 +65,9 @@ public partial class Settings
                     "OperationHistory.json",
                     "WinGetAlreadyUpgradedPackages.json",
                     "WinGetUpgradeAttempts.json",
+                    "MaintenanceTaskLastRun.json",
+                    "MaintenanceTaskLastFailure.json",
+                    "MaintenanceSchedules.invalid",
                     "TelemetryClientToken",
                     "CurrentSessionToken",
                 }.Contains(entry.Key)

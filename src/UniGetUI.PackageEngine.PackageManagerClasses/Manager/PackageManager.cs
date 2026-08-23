@@ -66,6 +66,8 @@ namespace UniGetUI.PackageEngine.ManagerClasses.Manager
         );
         protected abstract void _loadManagerVersion(out string version);
 
+        protected virtual void _performPreInitializationSteps() { }
+
         protected virtual void _performExtraLoadingSteps() { }
 
         public virtual void Initialize()
@@ -74,6 +76,7 @@ namespace UniGetUI.PackageEngine.ManagerClasses.Manager
             {
                 _ready = false;
                 _ensurePropertlyConstructed();
+                _performPreInitializationSteps();
 
                 if (!IsEnabled())
                 { // Do NOT initialise disabled package managers
@@ -376,7 +379,13 @@ namespace UniGetUI.PackageEngine.ManagerClasses.Manager
         /// Returns an array of UpgradablePackage objects that represent the available updates reported by the manager.
         /// This method is fail-safe and will return an empty array if an error occurs.
         /// </summary>
-        public IReadOnlyList<IPackage> GetAvailableUpdates() => _getAvailableUpdates(false);
+        public bool LastUpdatesListingFailed { get; private set; }
+
+        public IReadOnlyList<IPackage> GetAvailableUpdates()
+        {
+            LastUpdatesListingFailed = false;
+            return _getAvailableUpdates(false);
+        }
 
         private IReadOnlyList<IPackage> _getAvailableUpdates(bool SecondAttempt)
         {
@@ -416,6 +425,7 @@ namespace UniGetUI.PackageEngine.ManagerClasses.Manager
 
                 Logger.Error("Error finding updates on manager " + Name);
                 Logger.Error(e);
+                LastUpdatesListingFailed = true;
                 return [];
             }
         }
@@ -424,7 +434,13 @@ namespace UniGetUI.PackageEngine.ManagerClasses.Manager
         /// Returns an array of Package objects that represent the installed reported by the manager.
         /// This method is fail-safe and will return an empty array if an error occurs.
         /// </summary>
-        public IReadOnlyList<IPackage> GetInstalledPackages() => _getInstalledPackages(false);
+        public bool LastInstalledListingFailed { get; private set; }
+
+        public IReadOnlyList<IPackage> GetInstalledPackages()
+        {
+            LastInstalledListingFailed = false;
+            return _getInstalledPackages(false);
+        }
 
         private IReadOnlyList<IPackage> _getInstalledPackages(bool SecondAttempt)
         {
@@ -461,6 +477,7 @@ namespace UniGetUI.PackageEngine.ManagerClasses.Manager
 
                 Logger.Error("Error finding installed packages on manager " + Name);
                 Logger.Error(e);
+                LastInstalledListingFailed = true;
                 return [];
             }
         }

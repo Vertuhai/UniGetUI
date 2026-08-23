@@ -68,9 +68,9 @@ public static class SettingsSearchIndex
         new("Notification preferences", ["notifications"], typeof(Notifications), null),
 
         // ── Updates ──────────────────────────────────────────────────────────
-        new("Check for package updates periodically", ["check for updates", "periodically"], typeof(Updates), "UpdatesCheckingCard"),
-        new("Check for updates every:", ["update frequency", "update interval"], typeof(Updates), "UpdatesCheckIntervalSelector"),
-        new("Install available updates automatically", ["automatic updates", "auto install updates"], typeof(Updates), "UpdatesAutomaticCard"),
+        new("Check for package updates periodically", ["check for updates", "periodically"], typeof(Scheduler), null),
+        new("Check for updates every:", ["update frequency", "update interval"], typeof(Scheduler), null),
+        new("Install available updates automatically", ["automatic updates", "auto install updates"], typeof(Scheduler), null),
         new("Do not automatically install updates when the network connection is metered", ["metered connection"], typeof(Updates), "AUPMeteredCard"),
         new("Do not automatically install updates when the device runs on battery", ["battery"], typeof(Updates), "AUPBatteryCard"),
         new("Do not automatically install updates when the battery saver is on", ["battery saver"], typeof(Updates), "AUPBatterySaverCard"),
@@ -78,6 +78,13 @@ public static class SettingsSearchIndex
         new("Custom minimum age (days)", ["custom age"], typeof(Updates), "MinimumUpdateAgeCustomInput"),
         new("Warn me when the installer URL host changes between the installed version and the new version (WinGet only)", ["installer host", "url host"], typeof(Updates), "InstallerHostWarningCard"),
         new("Package update preferences", ["updates"], typeof(Updates), null),
+
+        // ── Scheduler ────────────────────────────────────────────────────────
+        new("Scheduled maintenance", ["scheduler", "schedule", "time window", "maintenance window", "days", "hours", "at night"], typeof(Scheduler), null),
+        new("Check for package updates", ["schedule update check", "check daily", "check weekly"], typeof(Scheduler), null),
+        new("Install available updates", ["schedule updates", "install at night", "install weekly", "maintenance window"], typeof(Scheduler), null),
+        new("Local package backup", ["schedule local backup", "backup daily"], typeof(Scheduler), null),
+        new("Cloud package backup", ["schedule cloud backup"], typeof(Scheduler), null),
 
         // ── Operations ───────────────────────────────────────────────────────
         new("Choose how many operations should be performed in parallel", ["parallel", "concurrency"], typeof(Operations), "ParallelOperationCount"),
@@ -259,6 +266,7 @@ public static class SettingsSearchIndex
         nameof(Interface_P) => "User interface preferences",
         nameof(Notifications) => "Notification preferences",
         nameof(Updates) => "Package update preferences",
+        nameof(Scheduler) => "Scheduled maintenance",
         nameof(Operations) => "Package operation preferences",
         nameof(Internet) => "Internet connection settings",
         nameof(Backup) => "Package backup",

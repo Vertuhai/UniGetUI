@@ -110,9 +110,24 @@ namespace UniGetUI.PackageEngine.Operations
 
                 Package.SetTag(PackageTag.OnQueue);
             };
-            CancelRequested += (_, _) => Package.SetTag(PackageTag.Default);
+            StatusChanged += (_, status) =>
+            {
+                if (status is OperationStatus.Canceled)
+                    Package.SetTag(PackageTag.Default);
+            };
             OperationSucceeded += (_, _) => HandleSuccess();
             OperationFailed += (_, _) => HandleFailure();
+        }
+
+        public static bool HasPendingOperation(IPackage package, OperationType role)
+        {
+            if (package.Tag is not (PackageTag.OnQueue or PackageTag.BeingProcessed))
+                return false;
+
+            Logger.Warn(
+                $"Skipping {role} of {package.Id} because an operation for this package is already queued or running"
+            );
+            return true;
         }
 
         private bool RequiresAdminRights() =>
@@ -844,9 +859,33 @@ namespace UniGetUI.PackageEngine.Operations
             List<string> Output
         )
         {
-            return Task.FromResult(
-                Package.Manager.OperationHelper.GetResult(Package, Role, Output, ReturnCode)
+            var veredict = Package.Manager.OperationHelper.GetResult(
+                Package,
+                Role,
+                Output,
+                ReturnCode
             );
+
+            if (veredict is OperationVeredict.Failure && Role is OperationType.Update)
+                ExplainNotApplicableUpdate(Output, ReturnCode);
+
+            return Task.FromResult(veredict);
+        }
+
+        private void ExplainNotApplicableUpdate(List<string> output, int returnCode)
+        {
+#if WINDOWS
+            if (Package.Manager is not WinGet winget)
+                return;
+
+            if (!winget.ReportedUpdateNotApplicable(output, returnCode))
+                return;
+
+            Metadata.FailureMessage = CoreTools.Translate(
+                "{package} may already be up to date, or no installer matches this system",
+                new Dictionary<string, object?> { { "package", Package.Name } }
+            );
+#endif
         }
 
         private static bool IsWinGetManager(IPackageManager manager)

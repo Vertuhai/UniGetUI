@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using Avalonia.Controls;
 using UniGetUI.Avalonia.Infrastructure;
 using UniGetUI.Avalonia.ViewModels.Pages;
@@ -344,6 +343,7 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         {
             var opts = await InstallOptionsFactory.LoadApplicableAsync(
                 pkg, elevated: elevated, interactive: interactive, no_integrity: no_integrity);
+            if (PackageOperation.HasPendingOperation(pkg, OperationType.Update)) continue;
             var op = new UpdatePackageOperation(pkg, opts);
             op.OperationSucceeded += (_, _) => TelemetryHandler.UpdatePackage(pkg, TEL_OP_RESULT.SUCCESS);
             op.OperationFailed += (_, _) => TelemetryHandler.UpdatePackage(pkg, TEL_OP_RESULT.FAILED);
@@ -357,6 +357,7 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         foreach (var pkg in packages)
         {
             var opts = await InstallOptionsFactory.LoadApplicableAsync(pkg);
+            if (PackageOperation.HasPendingOperation(pkg, OperationType.Uninstall)) continue;
             var op = new UninstallPackageOperation(pkg, opts);
             op.OperationSucceeded += (_, _) => TelemetryHandler.UninstallPackage(pkg, TEL_OP_RESULT.SUCCESS);
             op.OperationFailed += (_, _) => TelemetryHandler.UninstallPackage(pkg, TEL_OP_RESULT.FAILED);
@@ -370,6 +371,7 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         if (package is null || package.Source.IsVirtualManager) return;
         var uninstallOpts = await InstallOptionsFactory.LoadApplicableAsync(package);
         var updateOpts = await InstallOptionsFactory.LoadApplicableAsync(package);
+        if (PackageOperation.HasPendingOperation(package, OperationType.Update)) return;
         var uninstallOp = new UninstallPackageOperation(package, uninstallOpts);
         uninstallOp.OperationSucceeded += (_, _) => TelemetryHandler.UninstallPackage(package, TEL_OP_RESULT.SUCCESS);
         uninstallOp.OperationFailed += (_, _) => TelemetryHandler.UninstallPackage(package, TEL_OP_RESULT.FAILED);
@@ -389,29 +391,32 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
     {
         try
         {
+            bool shouldAutoInstall = MaintenanceScheduler.IsAutoInstallDue();
+
             var upgradable = UpgradablePackagesLoader.Instance.Packages
                 .Where(p => p.Tag is not PackageTag.OnQueue and not PackageTag.BeingProcessed)
                 .ToList();
 
             if (upgradable.Count == 0) return;
 
-            if (Settings.Get(Settings.K.DisableAUPOnBattery) && IsOnBattery())
+            if (Settings.Get(Settings.K.DisableAUPOnBattery) && PowerConditions.IsOnBattery())
             {
                 Logger.Warn("Updates will not be installed automatically because the device is on battery.");
                 ShowAvailableUpdatesNotification(upgradable);
             }
-            else if (Settings.Get(Settings.K.DisableAUPOnBatterySaver) && IsBatterySaverOn())
+            else if (Settings.Get(Settings.K.DisableAUPOnBatterySaver) && PowerConditions.IsBatterySaverOn())
             {
                 Logger.Warn("Updates will not be installed automatically because battery saver is enabled.");
                 ShowAvailableUpdatesNotification(upgradable);
             }
-            else if (Settings.Get(Settings.K.DisableAUPOnMeteredConnections) && IsOnMeteredConnection())
+            else if (Settings.Get(Settings.K.DisableAUPOnMeteredConnections) && PowerConditions.IsOnMeteredConnection())
             {
                 Logger.Warn("Updates will not be installed automatically because the current internet connection is metered.");
                 ShowAvailableUpdatesNotification(upgradable);
             }
-            else if (Settings.Get(Settings.K.AutomaticallyUpdatePackages))
+            else if (shouldAutoInstall)
             {
+                MaintenanceScheduler.MarkAutoInstallHandled();
                 _ = AvaloniaPackageOperationHelper.UpdateAllAsync();
                 ShowUpgradingPackagesNotification(upgradable);
             }
@@ -454,51 +459,4 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
             MacOsNotificationBridge.ShowUpgradingPackagesNotification(upgradable);
     }
 
-    // ─── Battery / power helpers (Windows P/Invoke) ───────────────────────────
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SYSTEM_POWER_STATUS
-    {
-        public byte ACLineStatus;     // 0 = battery, 1 = AC, 255 = unknown
-        public byte BatteryFlag;
-        public byte BatteryLifePercent;
-        public byte SystemStatusFlag; // bit 0: battery saver active
-        public uint BatteryLifeTime;
-        public uint BatteryFullLifeTime;
-    }
-
-#pragma warning disable CA1416
-    [DllImport("kernel32.dll")]
-    private static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS status);
-#pragma warning restore CA1416
-
-    private static bool IsOnBattery()
-    {
-        if (!OperatingSystem.IsWindows()) return false;
-#pragma warning disable CA1416
-        return GetSystemPowerStatus(out var s) && s.ACLineStatus == 0;
-#pragma warning restore CA1416
-    }
-
-    private static bool IsBatterySaverOn()
-    {
-        if (!OperatingSystem.IsWindows()) return false;
-#pragma warning disable CA1416
-        return GetSystemPowerStatus(out var s) && (s.SystemStatusFlag & 0x01) != 0;
-#pragma warning restore CA1416
-    }
-
-    private static bool IsOnMeteredConnection()
-    {
-#if WINDOWS
-        var costType = Windows.Networking.Connectivity.NetworkInformation
-            .GetInternetConnectionProfile()
-            ?.GetConnectionCost()
-            .NetworkCostType;
-        return costType is Windows.Networking.Connectivity.NetworkCostType.Fixed
-            or Windows.Networking.Connectivity.NetworkCostType.Variable;
-#else
-        return false;
-#endif
-    }
 }

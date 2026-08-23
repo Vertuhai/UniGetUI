@@ -251,6 +251,41 @@ public sealed class PackageOperationsTests
     }
 
     [Fact]
+    public async Task InstallOperationCanceledByManagerClearsPackageTag()
+    {
+        var package = CreatePackage();
+        InitializeLoaders();
+        using var operation = new SimulatedInstallPackageOperation(
+            package,
+            new InstallOptions(),
+            OperationVeredict.Canceled
+        );
+
+        await operation.MainThread();
+
+        Assert.Equal(OperationStatus.Canceled, operation.Status);
+        Assert.Equal(PackageTag.Default, package.Tag);
+    }
+
+    [Fact]
+    public async Task InstallOperationCanceledWhileQueuedClearsPackageTag()
+    {
+        var package = CreatePackage();
+        InitializeLoaders();
+        using var operation = new SimulatedInstallPackageOperation(
+            package,
+            new InstallOptions(),
+            OperationVeredict.Success
+        );
+        operation.Enqueued += (_, _) => operation.Cancel();
+
+        await operation.MainThread();
+
+        Assert.Equal(OperationStatus.Canceled, operation.Status);
+        Assert.Equal(PackageTag.Default, package.Tag);
+    }
+
+    [Fact]
     public async Task InstallOperationSuccessfulRunPrefersAuthoritativeInstalledVersion()
     {
         TestPackageManager? manager = null;
@@ -362,6 +397,32 @@ public sealed class PackageOperationsTests
             InstalledPackagesLoader.Instance.GetEquivalentPackages(installedBeforeUpdate),
             package => package.VersionString == "2.1.4"
         );
+    }
+
+    [Fact]
+    public async Task OutputSnapshotsDoNotThrowWhileLinesAreAppended()
+    {
+        using var operation = new LoggingStubOperation();
+        const int lines = 20_000;
+
+        var writer = Task.Run(() =>
+        {
+            for (int i = 0; i < lines; i++)
+                operation.EmitLine($"line {i}", AbstractOperation.LineType.Information);
+        });
+
+        var reader = Task.Run(() =>
+        {
+            while (!writer.IsCompleted)
+            {
+                foreach (var _ in operation.GetOutput()) { }
+                foreach (var _ in operation.RawOutputForTests()) { }
+            }
+        });
+
+        await Task.WhenAll(writer, reader);
+
+        Assert.Equal(lines, operation.GetOutput().Count);
     }
 
     [Fact]
