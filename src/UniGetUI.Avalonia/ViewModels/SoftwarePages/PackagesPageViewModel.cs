@@ -146,6 +146,7 @@ public partial class PackagesPageViewModel : ViewModelBase
     public readonly bool LoadsOnStart;
     public readonly bool RoleIsUpdateLike;
     public bool SimilarSearchEnabled { get; private set; }
+    public bool InstallerHostColumnVisible { get; }
     public readonly string NoPackagesText;
     public readonly string NoMatchesText;
     public readonly string SearchBoxPlaceholder;
@@ -189,6 +190,7 @@ public partial class PackagesPageViewModel : ViewModelBase
     [ObservableProperty] private string _versionHeaderText = "";
     [ObservableProperty] private string _newVersionHeaderText = "";
     [ObservableProperty] private string _sourceHeaderText = "";
+    [ObservableProperty] private string _installerHostHeaderText = "";
 
     // ─── Collections ──────────────────────────────────────────────────────────
     public ObservablePackageCollection FilteredPackages { get; } = new();
@@ -223,6 +225,7 @@ public partial class PackagesPageViewModel : ViewModelBase
     public event Action? HelpRequested;
     /// <summary>Fired when the ViewModel wants to show the Manage-Ignored-Updates dialog.</summary>
     public event Action? ManageIgnoredRequested;
+    public event Action? ManageAutoUpdatesRequested;
 
     // ─── Constructor ─────────────────────────────────────────────────────────
     public PackagesPageViewModel(PackagesPageData data)
@@ -248,6 +251,8 @@ public partial class PackagesPageViewModel : ViewModelBase
         SimilarSearchEnabled = !data.DisableSuggestedResultsRadio;
         RoleIsUpdateLike = data.PageRole == OperationType.Update;
         NewVersionHeaderVisible = RoleIsUpdateLike;
+        InstallerHostColumnVisible = Settings.Get(Settings.K.ShowInstallerHostColumn)
+            && data.PageRole != OperationType.Uninstall;
         ReloadButtonVisible = !DisableReload;
         SearchBoxPlaceholder = CoreTools.Translate("Search for packages");
 
@@ -899,6 +904,7 @@ public partial class PackagesPageViewModel : ViewModelBase
         VersionHeaderText = isList ? CoreTools.Translate("Version") : "";
         NewVersionHeaderText = isList ? CoreTools.Translate("New version") : "";
         SourceHeaderText = isList ? CoreTools.Translate("Source") : "";
+        InstallerHostHeaderText = isList ? CoreTools.Translate("Installer host") : "";
     }
 
     public bool IsListViewMode => ViewMode == PackageViewMode.List;
@@ -974,6 +980,7 @@ public partial class PackagesPageViewModel : ViewModelBase
     [RelayCommand] private void ClearSourceSelection_Cmd() { ClearSourceSelection(); FilterPackages(); }
     [RelayCommand] private void RequestHelp() => HelpRequested?.Invoke();
     [RelayCommand] private void RequestManageIgnored() => ManageIgnoredRequested?.Invoke();
+    [RelayCommand] private void RequestManageAutoUpdates() => ManageAutoUpdatesRequested?.Invoke();
 
     // ─── Sort commands ────────────────────────────────────────────────────────
     [RelayCommand] private void SortByName() => SortFieldIndex = 0;

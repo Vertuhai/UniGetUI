@@ -54,6 +54,7 @@ public static class SettingsSearchIndex
         new("Manage UniGetUI autostart behaviour", ["autostart", "run at login", "startup"], typeof(Interface_P), "EditAutostartSettings"),
         new("Show package icons on package lists", ["package icons"], typeof(Interface_P), "InterfacePackageListsCard"),
         new("Show illustrations on package lists", ["illustrations", "package illustrations"], typeof(Interface_P), "PackageIllustrationsCard"),
+        new("Show the installer host on package lists", ["installer host", "download host", "installer url", "column"], typeof(Interface_P), "InstallerHostColumnCard"),
         new("Clear the icon cache", ["icon cache", "clear cache", "cache size"], typeof(Interface_P), "ResetIconCache"),
         new("Select upgradable packages by default", ["select updates", "select upgradable"], typeof(Interface_P), "SelectUpgradableCard"),
         new("User interface preferences", ["interface", "ui"], typeof(Interface_P), null),
@@ -90,7 +91,9 @@ public static class SettingsSearchIndex
         new("Choose how many operations should be performed in parallel", ["parallel", "concurrency"], typeof(Operations), "ParallelOperationCount"),
         new("Clear successful operations from the operation list after a 5 second delay", ["clear successful", "maintain installs"], typeof(Operations), "ClearSuccessfulOpsCard"),
         new("Try to kill the processes that refuse to close when requested to", ["kill processes"], typeof(Operations), "KillProcessesCard"),
+        new("Name of the downloaded installer files", ["installer name", "download name", "file name", "version in file name", "rename installers"], typeof(Operations), "InstallerNameSchemeCard"),
         new("Ask to delete desktop shortcuts created during an install or upgrade.", ["desktop shortcuts", "shortcut remover"], typeof(Operations), "AskToDeleteNewDesktopShortcuts"),
+        new("Ask about the Start Menu shortcuts created during an install or upgrade.", ["start menu shortcuts", "start menu folder", "move shortcuts", "relocate shortcuts", "organize start menu"], typeof(Operations), "AskAboutNewStartMenuShortcuts"),
         new("Package operation preferences", ["operations"], typeof(Operations), null),
 
         // ── Internet ─────────────────────────────────────────────────────────
@@ -109,7 +112,9 @@ public static class SettingsSearchIndex
         new("Perform a local backup now", ["local backup now"], typeof(Backup), "BackupNowButton_LOCAL"),
         new("Change backup output directory", ["backup directory", "backup folder"], typeof(Backup), "BackupDirectoryCard"),
         new("Set a custom backup file name", ["backup file name"], typeof(Backup), "BackupFileNameCard"),
-        new("Add a timestamp to the backup file names", ["backup timestamp"], typeof(Backup), "BackupTimestampCard"),
+        new("Keep a separate file for each backup", ["backup timestamp", "timestamped file names", "separate backups"], typeof(Backup), "BackupTimestampCard"),
+        new("Maximum number of local backups to keep", ["backup retention", "backup limit", "delete old backups"], typeof(Backup), "MaxBackupCountCard"),
+        new("Custom maximum number of backups", ["custom backup count"], typeof(Backup), "MaxBackupCountCustomInput"),
         new("Package backup", ["backup"], typeof(Backup), null),
 
         // ── Administrator ────────────────────────────────────────────────────
