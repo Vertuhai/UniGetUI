@@ -72,6 +72,8 @@ namespace UniGetUI.PackageEngine.PackageClasses
         public string AutomationName { get; }
         public string Id { get; }
         public virtual string VersionString { get; }
+
+        public virtual bool HasConcreteVersion => true;
         public CoreTools.Version NormalizedVersion { get; }
         public CoreTools.Version NormalizedNewVersion { get; }
         public bool IsPopulated { get; set; }
@@ -204,11 +206,7 @@ namespace UniGetUI.PackageEngine.PackageClasses
                     Manager.DetailsHelper.GetIcon,
                     this
                 );
-                string? path = IconCacheEngine.GetCacheOrDownloadIcon(
-                    icon,
-                    Manager.Name,
-                    CoreTools.MakeValidFileName(Id)
-                );
+                string? path = IconCacheEngine.GetCacheOrDownloadIcon(icon, Manager.Name, Id);
                 return path is null ? null : new Uri((path.StartsWith('/') ? "file://" : "file:///") + path);
             }
             catch (Exception ex)
@@ -319,12 +317,12 @@ namespace UniGetUI.PackageEngine.PackageClasses
         {
             foreach (var p in GetInstalledPackages())
             {
-                if (p.NormalizedVersion == CoreTools.Version.Null || this.NormalizedNewVersion == CoreTools.Version.Null)
+                if (Manager.CompareVersions(p.VersionString, this.NewVersionString) is not { } comparison)
                 {
                     continue;
                 }
 
-                if (p.NormalizedVersion >= this.NormalizedNewVersion)
+                if (comparison >= 0)
                 {
                     return true;
                 }

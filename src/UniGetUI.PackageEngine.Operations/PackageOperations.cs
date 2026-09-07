@@ -183,12 +183,12 @@ namespace UniGetUI.PackageEngine.Operations
         {
             bool IsAdmin = CoreTools.IsAdministrator();
             Package.SetTag(PackageTag.OnQueue);
-            string operation_args = string.Join(
-                " ",
-                Package.Manager.OperationHelper.GetParameters(Package, Options, Role)
+            var operationParameters = Package.Manager.OperationHelper.GetParameters(
+                Package,
+                Options,
+                Role
             );
-            string FileName,
-                Arguments;
+            var callVector = Package.Manager.Status.OperationCallArgs;
 
             if (RequiresAdminRights() && IsAdmin is false)
             {
@@ -202,14 +202,36 @@ namespace UniGetUI.PackageEngine.Operations
                     RequestCachingOfUACPrompt();
                 }
 
-                FileName = CoreData.ElevatorPath;
-                Arguments =
-                    $"{CoreData.ElevatorArgs} \"{Package.Manager.Status.ExecutablePath}\" {Package.Manager.Status.ExecutableCallArgs} {operation_args}".TrimStart();
+                process.StartInfo.FileName = CoreData.ElevatorPath;
+                if (callVector.Count > 0)
+                {
+                    SetArgumentVector(
+                        [
+                            .. ElevatorArgumentPrefix(),
+                            Package.Manager.Status.ExecutablePath,
+                            .. callVector,
+                            .. operationParameters,
+                        ]
+                    );
+                }
+                else
+                {
+                    process.StartInfo.Arguments =
+                        $"{CoreData.ElevatorArgs} \"{Package.Manager.Status.ExecutablePath}\" {Package.Manager.Status.ExecutableCallArgs} {string.Join(" ", operationParameters)}".TrimStart();
+                }
             }
             else
             {
-                FileName = Package.Manager.Status.ExecutablePath;
-                Arguments = $"{Package.Manager.Status.ExecutableCallArgs} {operation_args}";
+                process.StartInfo.FileName = Package.Manager.Status.ExecutablePath;
+                if (callVector.Count > 0)
+                {
+                    SetArgumentVector([.. callVector, .. operationParameters]);
+                }
+                else
+                {
+                    process.StartInfo.Arguments =
+                        $"{Package.Manager.Status.ExecutableCallArgs} {string.Join(" ", operationParameters)}";
+                }
             }
 
             if (IsAdmin && IsWinGetManager(Package.Manager))
@@ -217,8 +239,6 @@ namespace UniGetUI.PackageEngine.Operations
                 RedirectWinGetTempFolder();
             }
 
-            process.StartInfo.FileName = FileName;
-            process.StartInfo.Arguments = Arguments;
             process.StartInfo.StandardOutputEncoding = Package.Manager.OutputEncoding;
             process.StartInfo.StandardErrorEncoding = Package.Manager.OutputEncoding;
 
@@ -1064,10 +1084,16 @@ namespace UniGetUI.PackageEngine.Operations
             else if (role is OperationType.Uninstall && opts.PostUninstallCommand.Any())
                 l.Add(new(new PrePostOperation(opts.PostUninstallCommand), false));
 
+            static bool IsSupersededBy(IPackage installed, IPackage update) =>
+                update.Manager.CompareVersions(installed.VersionString, update.NewVersionString)
+                    is { } comparison
+                    ? comparison < 0
+                    : installed.NormalizedVersion < update.NormalizedNewVersion;
+
             if (role is OperationType.Update && opts.UninstallPreviousVersionsOnUpdate)
             {
                 var matches = InstalledPackagesLoader.Instance.Packages.Where(p =>
-                    p.IsEquivalentTo(package) && p.NormalizedVersion < package.NormalizedNewVersion
+                    p.IsEquivalentTo(package) && IsSupersededBy(p, package)
                 );
                 foreach (var match in matches)
                 {

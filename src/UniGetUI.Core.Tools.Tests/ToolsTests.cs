@@ -505,8 +505,15 @@ namespace UniGetUI.Core.Tools.Tests
         [InlineData("\"Hello; World\"", "Hello World")]
         [InlineData("'Hello; World'", "Hello World")]
         [InlineData("query\";start cmd.exe", "querystart cmd.exe")]
-        [InlineData("query;start /B program.exe", "querystart B program.exe")]
-        [InlineData(";&|<>%\"e'~?/\\`", "e")]
+        [InlineData("query;start /B program.exe", "querystart /B program.exe")]
+        [InlineData(";&|<>%\"e'~?\\`", "e")]
+        [InlineData("@babel/core", "@babel/core")]
+        [InlineData("query$(calc)", "querycalc")]
+        [InlineData("query${env:PATH}", "queryenv:PATH")]
+        [InlineData("query#comment", "querycomment")]
+        [InlineData("query!PATH!", "queryPATH")]
+        [InlineData("query^calc", "querycalc")]
+        [InlineData("query[char]65", "querychar65")]
         public void TestSafeQueryString(string query, string expected)
         {
             Assert.Equal(CoreTools.EnsureSafeQueryString(query), expected);
@@ -614,5 +621,52 @@ namespace UniGetUI.Core.Tools.Tests
                 );
             }
         }
+        [Theory]
+        [InlineData("..", "_")]
+        [InlineData(".", "_")]
+        [InlineData("...", "_")]
+        [InlineData("", "")]
+        [InlineData("   ", "_")]
+        [InlineData(". . .", "_")]
+        [InlineData(".NET Runtime", ".NET Runtime")]
+        [InlineData("Contoso.Tool", "Contoso.Tool")]
+        [InlineData("Contoso:Tool", "ContosoTool")]
+        [InlineData("CON", "_CON")]
+        [InlineData("con.exe", "_con.exe")]
+        [InlineData("NUL.json", "_NUL.json")]
+        [InlineData("LPT1", "_LPT1")]
+        [InlineData("COM¹.txt", "_COM¹.txt")]
+        [InlineData("LPT²", "_LPT²")]
+        [InlineData("COM³", "_COM³")]
+        [InlineData("icon. ", "icon")]
+        [InlineData("icon...", "icon")]
+        [InlineData("Contoso", "Contoso")]
+        [InlineData("a<b>c|d*e?f", "abcdef")]
+        [InlineData("dir/sub", "dirsub")]
+        [InlineData(@"dir\sub", "dirsub")]
+        public void MakeValidFileName_NeverReturnsATraversalComponent(
+            string input,
+            string expected
+        )
+        {
+            Assert.Equal(expected, CoreTools.MakeValidFileName(input));
+        }
+
+        [Theory]
+        [InlineData(@"..\..\..\evil")]
+        [InlineData("../../evil")]
+        [InlineData("..")]
+        [InlineData(".")]
+        [InlineData("   ")]
+        public void MakeValidFileName_ResultStaysInsideItsParentDirectory(string input)
+        {
+            string parent = Path.Combine(Path.GetTempPath(), "MVFN", Guid.NewGuid().ToString("N"));
+            string resolved = Path.GetFullPath(
+                Path.Join(parent, CoreTools.MakeValidFileName(input))
+            );
+
+            Assert.Equal(Path.GetFullPath(parent), Path.GetDirectoryName(resolved));
+        }
+
     }
 }
