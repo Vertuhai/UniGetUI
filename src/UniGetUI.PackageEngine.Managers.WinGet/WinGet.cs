@@ -92,6 +92,13 @@ namespace UniGetUI.PackageEngine.Managers.WingetManager
             }
         }
 
+        private static long _sourceIndexGeneration;
+
+        internal static long SourceIndexGeneration => Volatile.Read(ref _sourceIndexGeneration);
+
+        internal static void MarkSourceIndexRefreshed() =>
+            Interlocked.Increment(ref _sourceIndexGeneration);
+
         public WinGet()
         {
             Capabilities = new ManagerCapabilities
@@ -332,7 +339,8 @@ namespace UniGetUI.PackageEngine.Managers.WingetManager
                 executableName => CoreTools.WhichMultiple(executableName),
                 File.Exists,
                 GetBundledPingetExecutablePath(),
-                GetCliToolPreference()
+                GetCliToolPreference(),
+                () => SystemWinGetLocator.EnumerateOffPathExecutables(File.Exists)
             );
         }
 
@@ -340,7 +348,8 @@ namespace UniGetUI.PackageEngine.Managers.WingetManager
             Func<string, IReadOnlyList<string>> findExecutables,
             Func<string, bool> fileExists,
             string bundledPingetPath,
-            WinGetCliToolPreference cliToolPreference = WinGetCliToolPreference.Default
+            WinGetCliToolPreference cliToolPreference = WinGetCliToolPreference.Default,
+            Func<IEnumerable<string>>? findOffPathSystemWinGetFiles = null
         )
         {
             List<string> candidates = [];
@@ -348,6 +357,7 @@ namespace UniGetUI.PackageEngine.Managers.WingetManager
             if (cliToolPreference is not WinGetCliToolPreference.BundledPinget)
             {
                 candidates.AddRange(findExecutables(SystemWinGetExecutableName));
+                candidates.AddRange(findOffPathSystemWinGetFiles?.Invoke() ?? []);
             }
 
             if (cliToolPreference is not WinGetCliToolPreference.SystemWinGet)
@@ -808,12 +818,19 @@ namespace UniGetUI.PackageEngine.Managers.WingetManager
                 p.StartInfo.Environment["TMP"] = WinGetTemp;
             }
 
-            p.Start();
-            logger.AddToStdOut(p.StandardOutput.ReadToEnd());
-            logger.AddToStdErr(p.StandardError.ReadToEnd());
-            logger.Close(p.ExitCode);
-            p.WaitForExit();
-            p.Close();
+            try
+            {
+                p.Start();
+                logger.AddToStdOut(p.StandardOutput.ReadToEnd());
+                logger.AddToStdErr(p.StandardError.ReadToEnd());
+                logger.Close(p.ExitCode);
+                p.WaitForExit();
+                p.Close();
+            }
+            finally
+            {
+                MarkSourceIndexRefreshed();
+            }
         }
 
         private string GetCliToolProxyArgument()
