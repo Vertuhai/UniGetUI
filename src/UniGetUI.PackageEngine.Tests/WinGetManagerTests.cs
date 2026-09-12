@@ -952,6 +952,59 @@ public sealed class WinGetManagerTests : IDisposable
     }
 
     [Fact]
+    public void TryGetInstallerHostsForVersionFallsBackToTheTrimmedMsixVersion()
+    {
+        var package = CreatePingetQueryPackage();
+
+        var hosts = PingetPackageDetailsProvider.TryGetInstallerHostsForVersion(
+            package,
+            "1.2.3.0",
+            _ => CreatePingetShowResult(installerUrls: ["https://example.test/tool.msixbundle"])
+        );
+
+        Assert.NotNull(hosts);
+        Assert.Equal(["example.test"], hosts.Order());
+    }
+
+    [Fact]
+    public void TryGetInstallerHostsForVersionDoesNotRetryWhenThereIsNothingToTrim()
+    {
+        var package = CreatePingetQueryPackage();
+        int lookups = 0;
+
+        var hosts = PingetPackageDetailsProvider.TryGetInstallerHostsForVersion(
+            package,
+            "9.9.9",
+            _ =>
+            {
+                lookups++;
+                return CreatePingetShowResult(installerUrls: ["https://example.test/tool.exe"]);
+            }
+        );
+
+        Assert.Null(hosts);
+        Assert.Equal(1, lookups);
+    }
+
+    [Theory]
+    [InlineData("2.7.11.0", "2.7.11")]
+    [InlineData("2.7.11.0.0", "2.7.11")]
+    [InlineData("1.0.0.0", "1")]
+    [InlineData("0.0.0.0", "0")]
+    [InlineData("2.7.11", null)]
+    [InlineData("2.7.0.11", null)]
+    [InlineData("1.2.3-beta.0", null)]
+    [InlineData("4", null)]
+    [InlineData("", null)]
+    public void TrimTrailingZeroSegmentsOnlyTrimsPlainDottedVersions(
+        string version,
+        string? expected
+    )
+    {
+        Assert.Equal(expected, PingetPackageDetailsProvider.TrimTrailingZeroSegments(version));
+    }
+
+    [Fact]
     public void TryGetInstallerHostsForVersionReturnsTheHostsOfTheRequestedVersion()
     {
         var package = CreatePingetQueryPackage();
@@ -1777,6 +1830,49 @@ public sealed class WinGetManagerTests : IDisposable
         // No recorded upgrade => the update is genuinely available and must still be shown.
         Assert.Equal("Unknown", package.VersionString);
         Assert.Equal("2.0.0", package.NewVersionString);
+        Assert.True(package.InstalledVersionIsUnverified);
+    }
+
+    [Fact]
+    public void BuildUpdatePackages_FlagsARestoredVersionAsUnverified()
+    {
+        var manager = new WinGet();
+        var helper = new PingetCliHelper(manager, @"C:\Program Files\UniGetUI\pinget.exe");
+
+        Settings.SetDictionaryItem<string, string>(
+            Settings.K.WinGetAlreadyUpgradedPackages,
+            "Contoso.Restored",
+            "1.0.0"
+        );
+
+        var package = Assert.Single(
+            helper.BuildUpdatePackages(
+                PingetCliHelper.DeserializeJson<ListResponse>(
+                    UnknownVersionUpdateJson("Contoso.Restored", "2.0.0")
+                )
+            )
+        );
+
+        Assert.Equal("1.0.0", package.VersionString);
+        Assert.True(package.InstalledVersionIsUnverified);
+    }
+
+    [Fact]
+    public void BuildUpdatePackages_DoesNotFlagAVersionWinGetCouldRead()
+    {
+        var manager = new WinGet();
+        var helper = new PingetCliHelper(manager, @"C:\Program Files\UniGetUI\pinget.exe");
+
+        var package = Assert.Single(
+            helper.BuildUpdatePackages(
+                PingetCliHelper.DeserializeJson<ListResponse>(
+                    UpdateJson("Contoso.Readable", "1.0.0", "2.0.0")
+                )
+            )
+        );
+
+        Assert.Equal("1.0.0", package.VersionString);
+        Assert.False(package.InstalledVersionIsUnverified);
     }
 
     [Fact]
@@ -1911,10 +2007,216 @@ public sealed class WinGetManagerTests : IDisposable
         Assert.DoesNotContain("may already be up to date", operation.Metadata.FailureMessage);
     }
 
+    [Fact]
+    public async Task WinGetInstallerHashMismatchExplainsTheAdminBlock()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("XiaoweiCloud.CalendarTask")
+            .WithVersion("3.30.298.9128")
+            .WithNewVersion("3.30.299.9142")
+            .Build();
+        using var operation = new VeredictProbingUpdateOperation(package, new InstallOptions())
+        {
+            ElevationOverride = true,
+        };
+        string defaultMessage = operation.Metadata.FailureMessage;
+
+        var veredict = await operation.ProbeProcessVeredict(unchecked((int)0x8A150011), []);
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.NotEqual(defaultMessage, operation.Metadata.FailureMessage);
+        Assert.Contains("does not match the hash", operation.Metadata.FailureMessage);
+        Assert.False(operation.Metadata.FailureMessage.EndsWith('.'));
+        Assert.Contains(
+            operation.GetOutput(),
+            line => line.Item1.Contains("cannot skip this check while running as administrator")
+        );
+    }
+
+    [Fact]
+    public async Task WinGetInstallerHashMismatchPointsAtTheOverrideSettingWhenSkippingWasRequested()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("XiaoweiCloud.CalendarTask")
+            .WithVersion("3.30.298.9128")
+            .WithNewVersion("3.30.299.9142")
+            .Build();
+        using var operation = new VeredictProbingUpdateOperation(
+            package,
+            new InstallOptions { SkipHashCheck = true }
+        )
+        {
+            ElevationOverride = false,
+        };
+
+        var veredict = await operation.ProbeProcessVeredict(unchecked((int)0x8A150011), []);
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.Contains(
+            operation.GetOutput(),
+            line => line.Item1.Contains("InstallerHashOverride")
+        );
+    }
+
+    [Fact]
+    public async Task WinGetInstallerHashMismatchExplainsTheFailureWithoutElevation()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("XiaoweiCloud.CalendarTask")
+            .WithVersion("3.30.298.9128")
+            .WithNewVersion("3.30.299.9142")
+            .Build();
+        using var operation = new VeredictProbingUpdateOperation(package, new InstallOptions())
+        {
+            ElevationOverride = false,
+        };
+        string defaultMessage = operation.Metadata.FailureMessage;
+
+        var veredict = await operation.ProbeProcessVeredict(unchecked((int)0x8A150011), []);
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.NotEqual(defaultMessage, operation.Metadata.FailureMessage);
+        Assert.Contains("does not match the hash", operation.Metadata.FailureMessage);
+        Assert.DoesNotContain(
+            operation.GetOutput(),
+            line => line.Item1.Contains("running as administrator")
+        );
+    }
+
+    [Fact]
+    public async Task WinGetFailureUnrelatedToTheInstallerHashKeepsTheDefaultMessage()
+    {
+        var manager = new WinGet();
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("XiaoweiCloud.CalendarTask")
+            .WithVersion("3.30.298.9128")
+            .WithNewVersion("3.30.299.9142")
+            .Build();
+        using var operation = new VeredictProbingUpdateOperation(package, new InstallOptions())
+        {
+            ElevationOverride = true,
+        };
+        string defaultMessage = operation.Metadata.FailureMessage;
+
+        var veredict = await operation.ProbeProcessVeredict(unchecked((int)0x8A150012), []);
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.Equal(defaultMessage, operation.Metadata.FailureMessage);
+    }
+
+    [Fact]
+    public void WinGetDoesNotOfferTheIntegritySkipRetryWhenTheOperationRunsElevated()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+
+        Assert.False(
+            PackageOperation.CanRetrySkippingIntegrityChecks(
+                manager,
+                new InstallOptions(),
+                OperationType.Update,
+                willRunElevated: true
+            )
+        );
+        Assert.True(
+            PackageOperation.CanRetrySkippingIntegrityChecks(
+                manager,
+                new InstallOptions(),
+                OperationType.Update,
+                willRunElevated: false
+            )
+        );
+    }
+
+    [Fact]
+    public void WinGetOffersTheIntegritySkipRetryWhenElevatedOnPinget()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.BundledPinget);
+
+        Assert.True(
+            PackageOperation.CanRetrySkippingIntegrityChecks(
+                manager,
+                new InstallOptions(),
+                OperationType.Update,
+                willRunElevated: true
+            )
+        );
+    }
+
+    [Fact]
+    public void WinGetDoesNotOfferTheIntegritySkipRetryOnUninstall()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+
+        Assert.False(
+            PackageOperation.CanRetrySkippingIntegrityChecks(
+                manager,
+                new InstallOptions(),
+                OperationType.Uninstall,
+                willRunElevated: false
+            )
+        );
+        Assert.DoesNotContain(
+            "--ignore-security-hash",
+            manager.OperationHelper.GetParameters(
+                new PackageBuilder().WithManager(manager).WithId("Contoso.Tool").Build(),
+                new InstallOptions { SkipHashCheck = true },
+                OperationType.Uninstall
+            )
+        );
+    }
+
+    [Fact]
+    public void OtherManagersKeepTheIntegritySkipRetryOnUninstall()
+    {
+        var manager = new Infrastructure.Fakes.TestPackageManager();
+
+        Assert.True(
+            PackageOperation.CanRetrySkippingIntegrityChecks(
+                manager,
+                new InstallOptions(),
+                OperationType.Uninstall,
+                willRunElevated: true
+            )
+        );
+    }
+
+    [Fact]
+    public void WinGetNeverOffersTheIntegritySkipRetryWhenAlreadySkipping()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.BundledPinget);
+
+        Assert.False(
+            PackageOperation.CanRetrySkippingIntegrityChecks(
+                manager,
+                new InstallOptions { SkipHashCheck = true },
+                OperationType.Update,
+                willRunElevated: false
+            )
+        );
+    }
+
     private sealed class VeredictProbingUpdateOperation : UpdatePackageOperation
     {
         public VeredictProbingUpdateOperation(IPackage package, InstallOptions options)
             : base(package, options) { }
+
+        public bool? ElevationOverride { get; set; }
+
+        public override bool WillRunElevated => ElevationOverride ?? base.WillRunElevated;
 
         public Task<OperationVeredict> ProbeProcessVeredict(int returnCode, List<string> output)
             => GetProcessVeredict(returnCode, output);
