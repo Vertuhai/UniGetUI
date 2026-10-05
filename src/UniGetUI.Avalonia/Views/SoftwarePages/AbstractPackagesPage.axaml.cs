@@ -67,6 +67,7 @@ public abstract partial class AbstractPackagesPage : UserControl,
 
         // "New version" sort option is only relevant on the updates page
         OrderByNewVersion_Menu.IsVisible = ViewModel.RoleIsUpdateLike;
+        OrderByDownloadSize_Menu.IsVisible = ViewModel.DownloadSizeColumnVisible;
 
         // Stamp initial checkmarks, then keep them in sync with sort-property changes
         UpdateSortMenuChecks();
@@ -99,11 +100,16 @@ public abstract partial class AbstractPackagesPage : UserControl,
         GenerateToolBar(ViewModel);
         InitializeToolbarOverflow();
 
-        // Double-click a list row → show details
+        // Double-click a package row → show details. DataGrid-level gestures also receive
+        // header double-clicks, so require an actual row ancestor rather than blacklisting headers.
         PackageList.DoubleTapped += (_, e) =>
         {
-            if (e.Source is Visual source
-                && (source is CheckBox || source.GetVisualAncestors().Any(control => control is CheckBox)))
+            if (e.Source is not Visual source)
+                return;
+
+            var ancestors = source.GetVisualAncestors().ToList();
+            if ((source is CheckBox || ancestors.Any(control => control is CheckBox))
+                || (source is not DataGridRow && !ancestors.Any(control => control is DataGridRow)))
             {
                 return;
             }
@@ -254,14 +260,16 @@ public abstract partial class AbstractPackagesPage : UserControl,
             var entry = ViewModel.ToolbarEntries.FirstOrDefault(e => ReferenceEquals(e.Control, control));
             if (entry is null) continue;
 
-            if (entry.Invoke is not { } invoke)
+            if (entry.Invoke is null && entry.InvokeAt is null)
             {
                 if (items.Count > 0 && items[^1] is not Separator) items.Add(new Separator());
                 continue;
             }
 
             var item = new MenuItem { Header = entry.Label, Icon = LoadMenuIcon(entry.IconName) };
-            item.Click += (_, _) => invoke();
+            if (entry.InvokeAt is { } invokeAt)
+                item.Click += (_, _) => Dispatcher.UIThread.Post(() => invokeAt(ToolbarOverflowButton));
+            else if (entry.Invoke is { } invoke) item.Click += (_, _) => invoke();
             items.Add(item);
         }
 
@@ -393,6 +401,7 @@ public abstract partial class AbstractPackagesPage : UserControl,
         OrderByVersion_Menu.Icon = Check(ViewModel.SortFieldIndex == 2);
         OrderByNewVersion_Menu.Icon = Check(ViewModel.SortFieldIndex == 3);
         OrderBySource_Menu.Icon = Check(ViewModel.SortFieldIndex == 4);
+        OrderByDownloadSize_Menu.Icon = Check(ViewModel.SortFieldIndex == 5);
         OrderByAscending_Menu.Icon = Check(ViewModel.SortAscending);
         OrderByDescending_Menu.Icon = Check(!ViewModel.SortAscending);
     }
@@ -530,7 +539,7 @@ public abstract partial class AbstractPackagesPage : UserControl,
                 InlineSidePanel.IsVisible = open;
                 SetInlineSidePanelTransformInstant(open ? 0 : -_savedFilterPaneWidth);
                 FilteringPanel.ColumnDefinitions[0].Width = open ? new GridLength(_savedFilterPaneWidth) : new GridLength(0);
-                FilteringPanel.ColumnDefinitions[1].Width = open ? new GridLength(4) : new GridLength(0);
+                FilteringPanel.ColumnDefinitions[1].Width = open ? new GridLength(12) : new GridLength(0);
             }
         }
     }
@@ -668,7 +677,7 @@ public abstract partial class AbstractPackagesPage : UserControl,
         {
             // Reserve the column (one reflow), then slide the pane in from -width to 0.
             col0.Width = new GridLength(_savedFilterPaneWidth);
-            col1.Width = new GridLength(4);
+            col1.Width = new GridLength(12);
             InlineSidePanel.IsVisible = true;
             InlineSidePanel.RenderTransform = TranslateX(0);
         }

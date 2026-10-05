@@ -45,12 +45,14 @@ public abstract partial class AbstractOperation : IDisposable
         }
     }
 
+    public bool SystemRestartRequired { get; private set; }
+
     public void ApplyCapabilities(bool admin, bool interactive, bool skiphash, string? scope)
     {
         BadgesChanged?.Invoke(this, new BadgeCollection(admin, interactive, skiphash, scope));
     }
 
-    private readonly IReadOnlyList<InnerOperation> PreOperations = [];
+    private readonly List<InnerOperation> PreOperations = [];
     private readonly IReadOnlyList<InnerOperation> PostOperations = [];
 
     public AbstractOperation(
@@ -61,7 +63,7 @@ public abstract partial class AbstractOperation : IDisposable
     {
         QUEUE_ENABLED = queue_enabled;
         if (preOps is not null)
-            PreOperations = preOps;
+            PreOperations.AddRange(preOps);
         if (postOps is not null)
             PostOperations = postOps;
 
@@ -78,6 +80,11 @@ public abstract partial class AbstractOperation : IDisposable
             MAX_OPERATIONS = 1;
             Logger.Debug("Parallel operation limit not set, defaulting to 1");
         }
+    }
+
+    protected void AddPreOperation(InnerOperation operation)
+    {
+        PreOperations.Add(operation);
     }
 
     public void Cancel()
@@ -343,12 +350,21 @@ public abstract partial class AbstractOperation : IDisposable
             while (OperationQueue.Remove(this))
                 ;
 
-            if (result == OperationVeredict.Success)
+            SystemRestartRequired = result is OperationVeredict.RestartRequired;
+
+            if (result is OperationVeredict.Success or OperationVeredict.RestartRequired)
             {
                 Status = OperationStatus.Succeeded;
                 OperationSucceeded?.Invoke(this, EventArgs.Empty);
                 OperationFinished?.Invoke(this, EventArgs.Empty);
                 Line(Metadata.SuccessMessage, LineType.Information);
+                if (SystemRestartRequired)
+                    Line(
+                        CoreTools.Translate(
+                            "This operation finished, but the computer must be restarted before the changes take effect"
+                        ),
+                        LineType.Information
+                    );
             }
             else if (result == OperationVeredict.Failure)
             {
@@ -447,12 +463,13 @@ public abstract partial class AbstractOperation : IDisposable
     {
         OperationVeredict result;
 
-        // Process preoperations
+        var preOps = new List<InnerOperation>(PreOperations);
+        preOps.AddRange(GetAttemptPreOperations());
         int i = 0,
-            count = PreOperations.Count;
+            count = preOps.Count;
         if (count > 0)
             Line("", LineType.VerboseDetails);
-        foreach (var preReq in PreOperations)
+        foreach (var preReq in preOps)
         {
             if (Status is OperationStatus.Canceled || CancellationToken.IsCancellationRequested)
                 return OperationVeredict.Canceled;
@@ -535,7 +552,7 @@ public abstract partial class AbstractOperation : IDisposable
             }
         } while (result is OperationVeredict.AutoRetry);
 
-        if (result is not OperationVeredict.Success)
+        if (result is not (OperationVeredict.Success or OperationVeredict.RestartRequired))
             return result;
 
         // Process postoperations
@@ -731,6 +748,7 @@ public abstract partial class AbstractOperation : IDisposable
     }
 
     protected abstract void ApplyRetryAction(string retryMode);
+    protected virtual IReadOnlyList<InnerOperation> GetAttemptPreOperations() => [];
     protected abstract Task<OperationVeredict> PerformOperation();
     public abstract Task<Uri> GetOperationIcon();
 
@@ -760,6 +778,7 @@ public abstract partial class AbstractOperation : IDisposable
 
         scheduledRetry?.TrySetCanceled();
         Cancel();
+        DisposeStaleSpeedTimer();
         if (!IsExecutingOperation)
         {
             while (OperationQueue.Remove(this))

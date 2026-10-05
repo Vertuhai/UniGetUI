@@ -1,4 +1,5 @@
 #if WINDOWS
+using System.Diagnostics;
 using Devolutions.Pinget.Core;
 using UniGetUI.Core.Data;
 using UniGetUI.Core.SettingsEngine;
@@ -41,11 +42,13 @@ public sealed class WinGetManagerTests : IDisposable
         Settings.SetValue(Settings.K.ProxyURL, "");
         Settings.SetValue(Settings.K.WinGetCliToolPreference, "");
         Settings.SetValue(Settings.K.WinGetComApiPolicy, "");
+        Settings.Set(Settings.K.UseAgentBroker, false);
     }
 
     public void Dispose()
     {
         SetNoPackagesHaveBeenLoaded(false);
+        NativePackageHandler.Clear();
         WinGetHelper.Instance = null!;
         CoreData.TEST_DataDirectoryOverride = null;
         if (Directory.Exists(_testRoot))
@@ -363,6 +366,120 @@ public sealed class WinGetManagerTests : IDisposable
         );
 
         Assert.Equal([bundledPinget], candidates);
+    }
+
+    [Fact]
+    public void ManagerStaysNotReadyWhenNoCandidateExecutableCanBeStarted()
+    {
+        string brokenWinGet = Path.Combine(_testRoot, "winget.exe");
+        File.WriteAllBytes(brokenWinGet, []);
+
+        var manager = new ScriptedCandidatesWinGet([brokenWinGet]);
+        manager.Initialize();
+
+        Assert.True(manager.Status.Found);
+        Assert.False(manager.IsReady());
+        Assert.Equal(brokenWinGet, manager.Status.ExecutablePath);
+    }
+
+    [Fact]
+    public void ManagerStaysNotReadyWhenTheOnlyCandidateExecutableReportsNoVersion()
+    {
+        string failingExecutable = Path.Combine(Environment.SystemDirectory, "timeout.exe");
+        Assert.True(File.Exists(failingExecutable));
+
+        var manager = new ScriptedCandidatesWinGet([failingExecutable]);
+        manager.Initialize();
+
+        Assert.True(manager.Status.Found);
+        Assert.False(manager.IsReady());
+    }
+
+    [Fact]
+    public void TryReadExecutableVersionFailsOnAnExecutableThatCannotBeStarted()
+    {
+        string brokenWinGet = Path.Combine(_testRoot, "winget.exe");
+        File.WriteAllBytes(brokenWinGet, []);
+
+        var (succeeded, output, failureReason) = WinGet.TryReadExecutableVersion(brokenWinGet, "");
+
+        Assert.False(succeeded);
+        Assert.Empty(output);
+        Assert.NotEmpty(failureReason);
+    }
+
+    [Fact]
+    public void TryReadExecutableVersionFailsOnAMissingExecutable()
+    {
+        string missingWinGet = Path.Combine(_testRoot, "missing", "winget.exe");
+
+        var (succeeded, output, failureReason) = WinGet.TryReadExecutableVersion(missingWinGet, "");
+
+        Assert.False(succeeded);
+        Assert.Empty(output);
+        Assert.NotEmpty(failureReason);
+    }
+
+    [Fact]
+    public void ResolveLaunchableExecutableFileKeepsThePreferredExecutableWhenItCanBeRun()
+    {
+        const string systemWinGet = @"C:\WindowsApps\winget.exe";
+
+        var (resolved, versionOutput, failureReason) = WinGet.ResolveLaunchableExecutableFile(
+            systemWinGet,
+            _ => (true, "v1.11.400", ""),
+            () => throw new InvalidOperationException(
+                "Other candidates should not be looked up when the preferred executable runs."
+            )
+        );
+
+        Assert.Equal(systemWinGet, resolved);
+        Assert.Equal("v1.11.400", versionOutput);
+        Assert.Null(failureReason);
+    }
+
+    [Fact]
+    public void ResolveLaunchableExecutableFileFallsBackToTheFirstCandidateThatCanBeRun()
+    {
+        const string systemWinGet = @"C:\WindowsApps\winget.exe";
+        const string packagedWinGet =
+            @"C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.29.290.0_x64__8wekyb3d8bbwe\winget.exe";
+        const string bundledPinget = @"C:\Program Files\UniGetUI\pinget.exe";
+        List<string> attempted = [];
+
+        var (resolved, versionOutput, failureReason) = WinGet.ResolveLaunchableExecutableFile(
+            systemWinGet,
+            executablePath =>
+            {
+                attempted.Add(executablePath);
+                return executablePath == bundledPinget
+                    ? (true, "pinget 0.12.0", "")
+                    : (false, "", "no applicable app licenses found");
+            },
+            () => [systemWinGet, packagedWinGet, bundledPinget]
+        );
+
+        Assert.Equal(bundledPinget, resolved);
+        Assert.Equal("pinget 0.12.0", versionOutput);
+        Assert.Null(failureReason);
+        Assert.Equal([systemWinGet, packagedWinGet, bundledPinget], attempted);
+    }
+
+    [Fact]
+    public void ResolveLaunchableExecutableFileKeepsThePreferredExecutableWhenNoCandidateCanBeRun()
+    {
+        const string systemWinGet = @"C:\WindowsApps\winget.exe";
+        const string bundledPinget = @"C:\Program Files\UniGetUI\pinget.exe";
+
+        var (resolved, versionOutput, failureReason) = WinGet.ResolveLaunchableExecutableFile(
+            systemWinGet,
+            _ => (false, "", "no applicable app licenses found"),
+            () => [systemWinGet, bundledPinget]
+        );
+
+        Assert.Equal(systemWinGet, resolved);
+        Assert.Null(versionOutput);
+        Assert.Equal("no applicable app licenses found", failureReason);
     }
 
     [Fact]
@@ -1473,6 +1590,219 @@ public sealed class WinGetManagerTests : IDisposable
         Assert.False(package.OverridenOptions.WinGet_DropArchAndScope);
     }
 
+    private const string NodeJsLocalIdentifier =
+        @"ARP\Machine\X64\{9292CBD9-B395-42D4-8847-C0E8004C6F25}";
+
+    private static Package BuildNodeJsPackage(WinGet manager, string id) =>
+        new PackageBuilder()
+            .WithManager(manager)
+            .WithId(id)
+            .WithVersion("24.12.0")
+            .WithNewVersion("26.7.0")
+            .Build();
+
+    [Fact]
+    public void WinGetUpdateRetriesWithTheLocalIdentifierWhenNoInstalledPackageMatches()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+        var package = BuildNodeJsPackage(manager, "OpenJS.NodeJS");
+        NativePackageHandler.AddLocalIdentifier(package, NodeJsLocalIdentifier);
+
+        var firstAttempt = manager.OperationHelper.GetParameters(
+            package,
+            new InstallOptions(),
+            OperationType.Update
+        );
+        Assert.Contains("\"OpenJS.NodeJS\"", firstAttempt);
+
+        var veredict = manager.OperationHelper.GetResult(
+            package,
+            OperationType.Update,
+            [],
+            unchecked((int)0x8A150014)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.AutoRetry);
+        Assert.True(package.OverridenOptions.WinGet_UseLocalIdentifier);
+
+        var retryAttempt = manager.OperationHelper.GetParameters(
+            package,
+            new InstallOptions(),
+            OperationType.Update
+        );
+        Assert.Contains($"\"{NodeJsLocalIdentifier}\"", retryAttempt);
+        Assert.DoesNotContain("\"OpenJS.NodeJS\"", retryAttempt);
+        Assert.Contains("--exact", retryAttempt);
+    }
+
+    [Fact]
+    public void WinGetUninstallRetriesWithTheLocalIdentifierWhenNoInstalledPackageMatches()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+        var package = BuildNodeJsPackage(manager, "OpenJS.NodeJS.Uninstall");
+        NativePackageHandler.AddLocalIdentifier(package, NodeJsLocalIdentifier);
+
+        var veredict = manager.OperationHelper.GetResult(
+            package,
+            OperationType.Uninstall,
+            [],
+            unchecked((int)0x8A150014)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.AutoRetry);
+
+        var retryAttempt = manager.OperationHelper.GetParameters(
+            package,
+            new InstallOptions(),
+            OperationType.Uninstall
+        );
+        Assert.Contains($"\"{NodeJsLocalIdentifier}\"", retryAttempt);
+    }
+
+    [Fact]
+    public void WinGetUpdateDoesNotRetryWithTheLocalIdentifierASecondTime()
+    {
+        var manager = new WinGet();
+        var package = BuildNodeJsPackage(manager, "OpenJS.NodeJS.Twice");
+        NativePackageHandler.AddLocalIdentifier(package, NodeJsLocalIdentifier);
+        package.OverridenOptions.WinGet_UseLocalIdentifier = true;
+
+        var veredict = manager.OperationHelper.GetResult(
+            package,
+            OperationType.Update,
+            [],
+            unchecked((int)0x8A150014)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+    }
+
+    [Fact]
+    public void WinGetUpdateDoesNotRetryWhenTheLocalIdentifierIsUnknown()
+    {
+        var manager = new WinGet();
+        var package = BuildNodeJsPackage(manager, "OpenJS.NodeJS.Unknown");
+
+        var veredict = manager.OperationHelper.GetResult(
+            package,
+            OperationType.Update,
+            [],
+            unchecked((int)0x8A150014)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.False(package.OverridenOptions.WinGet_UseLocalIdentifier);
+    }
+
+    [Fact]
+    public void WinGetUpdateDoesNotRetryWhenThePackageIsAlreadyIdentifiedLocally()
+    {
+        var manager = new WinGet();
+        var package = BuildNodeJsPackage(manager, NodeJsLocalIdentifier);
+        NativePackageHandler.AddLocalIdentifier(package, NodeJsLocalIdentifier);
+
+        var veredict = manager.OperationHelper.GetResult(
+            package,
+            OperationType.Update,
+            [],
+            unchecked((int)0x8A150014)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.False(package.OverridenOptions.WinGet_UseLocalIdentifier);
+    }
+
+    [Fact]
+    public void WinGetBrokeredUpdateIsNotRetriedBecauseTheRequestWouldBeIdentical()
+    {
+        var manager = new WinGet();
+        var package = BuildNodeJsPackage(manager, "OpenJS.NodeJS.Brokered");
+        NativePackageHandler.AddLocalIdentifier(package, NodeJsLocalIdentifier);
+
+        bool originalSetting = Settings.Get(Settings.K.UseAgentBroker);
+        Settings.Set(Settings.K.UseAgentBroker, true);
+        try
+        {
+            var veredict = manager.OperationHelper.GetResult(
+                package,
+                OperationType.Update,
+                [],
+                unchecked((int)0x8A150014)
+            );
+
+            OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+            Assert.False(package.OverridenOptions.WinGet_UseLocalIdentifier);
+        }
+        finally
+        {
+            Settings.Set(Settings.K.UseAgentBroker, originalSetting);
+        }
+    }
+
+    [Fact]
+    public void WinGetUpdateDoesNotRetryWhenTheLocalIdentifierWouldBeReadAsAnOption()
+    {
+        var manager = new WinGet();
+        var package = BuildNodeJsPackage(manager, "OpenJS.NodeJS.Unsafe");
+        NativePackageHandler.AddLocalIdentifier(package, "--source");
+
+        var veredict = manager.OperationHelper.GetResult(
+            package,
+            OperationType.Update,
+            [],
+            unchecked((int)0x8A150014)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.False(package.OverridenOptions.WinGet_UseLocalIdentifier);
+    }
+
+    [Fact]
+    public void WinGetUpdateUsesTheLocalIdentifierFromTheLatestListing()
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+        var package = BuildNodeJsPackage(manager, "OpenJS.NodeJS.Relisted");
+        NativePackageHandler.AddLocalIdentifier(
+            package,
+            @"ARP\Machine\X64\{00000000-0000-0000-0000-000000000000}"
+        );
+        NativePackageHandler.AddLocalIdentifier(package, NodeJsLocalIdentifier);
+        package.OverridenOptions.WinGet_UseLocalIdentifier = true;
+
+        var parameters = manager.OperationHelper.GetParameters(
+            package,
+            new InstallOptions(),
+            OperationType.Update
+        );
+
+        Assert.Contains($"\"{NodeJsLocalIdentifier}\"", parameters);
+        Assert.DoesNotContain(
+            "\"ARP\\Machine\\X64\\{00000000-0000-0000-0000-000000000000}\"",
+            parameters
+        );
+    }
+
+    [Fact]
+    public void WinGetInstallDoesNotRetryWithTheLocalIdentifier()
+    {
+        var manager = new WinGet();
+        var package = BuildNodeJsPackage(manager, "OpenJS.NodeJS.Install");
+        NativePackageHandler.AddLocalIdentifier(package, NodeJsLocalIdentifier);
+
+        var veredict = manager.OperationHelper.GetResult(
+            package,
+            OperationType.Install,
+            [],
+            unchecked((int)0x8A150014)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.False(package.OverridenOptions.WinGet_UseLocalIdentifier);
+    }
+
     [Fact]
     public void WinGetUpdateNotApplicableSuppressesPhantomUpdate()
     {
@@ -1707,8 +2037,10 @@ public sealed class WinGetManagerTests : IDisposable
         Assert.False(WinGetPkgOperationHelper.ConsumeAlreadyUpgradedSuppression(newerUpdate));
     }
 
-    [Fact]
-    public void RestartRequiredUpgradesNeverTripTheLoopBreaker()
+    [Theory]
+    [InlineData(0x8A150109u)]
+    [InlineData(0x8A15010Bu)]
+    public void RestartRequiredUpgradesNeverTripTheLoopBreaker(uint returnCode)
     {
         var manager = new WinGet();
         var package = new PackageBuilder()
@@ -1726,9 +2058,9 @@ public sealed class WinGetManagerTests : IDisposable
                     package,
                     OperationType.Update,
                     [],
-                    unchecked((int)0x8A150109u)
+                    unchecked((int)returnCode)
                 ),
-                OperationVeredict.Success
+                OperationVeredict.RestartRequired
             );
         }
 
@@ -2112,6 +2444,135 @@ public sealed class WinGetManagerTests : IDisposable
 
         OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
         Assert.Equal(defaultMessage, operation.Metadata.FailureMessage);
+    }
+
+    [Fact]
+    public void WinGetDetectsAnApplicationInUseFromWinGetHresults()
+    {
+        Assert.True(
+            WinGetPkgOperationHelper.ReportedApplicationCurrentlyRunning(
+                unchecked((int)0x8A150101)
+            )
+        );
+        Assert.True(
+            WinGetPkgOperationHelper.ReportedApplicationCurrentlyRunning(
+                unchecked((int)0x8A150103)
+            )
+        );
+        Assert.True(
+            WinGetPkgOperationHelper.ReportedApplicationCurrentlyRunning(
+                unchecked((int)0x8A150111)
+            )
+        );
+        Assert.False(
+            WinGetPkgOperationHelper.ReportedApplicationCurrentlyRunning(
+                unchecked((int)0x8A150102)
+            )
+        );
+    }
+
+    [Fact]
+    public void WinGetDoesNotTreatRawInstallerExitCode26AsAnApplicationInUse()
+    {
+        Assert.False(WinGetPkgOperationHelper.ReportedApplicationCurrentlyRunning(26));
+    }
+
+    [Fact]
+    public void WinGetGuessesASingleCloseProcessNameWhenTheDisplayNameMatchesTheIdTail()
+    {
+        var package = new PackageBuilder()
+            .WithManager(new WinGet())
+            .WithId("Spotify.Spotify")
+            .WithName("Spotify")
+            .Build();
+
+        Assert.Equal(["Spotify"], PackageOperation.GuessCloseProcessNames(package));
+    }
+
+    [Fact]
+    public void WinGetGuessesCloseProcessNamesFromDisplayNameAndIdTail()
+    {
+        var package = new PackageBuilder()
+            .WithManager(new WinGet())
+            .WithId("Git.Git")
+            .WithName("Git")
+            .Build();
+
+        Assert.Equal(["Git"], PackageOperation.GuessCloseProcessNames(package));
+
+        var spaced = new PackageBuilder()
+            .WithManager(new WinGet())
+            .WithId("SomeVendor.ToolName")
+            .WithName("Some Vendor Tool")
+            .Build();
+
+        Assert.Equal(["ToolName"], PackageOperation.GuessCloseProcessNames(spaced));
+    }
+
+    [Fact]
+    public void WinGetDoesNotGuessTheCurrentProcessAsACloseTarget()
+    {
+        using Process currentProcess = Process.GetCurrentProcess();
+        string current = currentProcess.ProcessName;
+        var package = new PackageBuilder()
+            .WithManager(new WinGet())
+            .WithId($"Vendor.{current}")
+            .WithName(current)
+            .Build();
+
+        Assert.Empty(PackageOperation.GuessCloseProcessNames(package));
+        Assert.Empty(PackageOperation.GetRunningCloseProcessNames(package));
+    }
+
+    [Fact]
+    public async Task WinGetApplicationCurrentlyRunningExplainsTheFailureToTheUser()
+    {
+        var manager = new WinGet();
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("Spotify.Spotify")
+            .WithName("Spotify")
+            .WithVersion("1.2.74.357")
+            .WithNewVersion("1.2.75.458")
+            .Build();
+        using var operation = new VeredictProbingUpdateOperation(package, new InstallOptions());
+        string defaultMessage = operation.Metadata.FailureMessage;
+
+        var veredict = await operation.ProbeProcessVeredict(
+            unchecked((int)0x8A150101),
+            [
+                "Found Spotify [Spotify.Spotify] Version 1.2.75.458",
+                "This application is currently running.",
+            ]
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.NotEqual(defaultMessage, operation.Metadata.FailureMessage);
+        Assert.Contains("currently running", operation.Metadata.FailureMessage);
+        Assert.False(operation.Metadata.FailureMessage.EndsWith('.'));
+        Assert.True(operation.FailedBecauseApplicationRunning);
+    }
+
+    [Fact]
+    public async Task WinGetFailureWithBareExitCode26KeepsTheDefaultMessage()
+    {
+        var manager = new WinGet();
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("Spotify.Spotify")
+            .WithName("Spotify")
+            .WithVersion("1.2.74.357")
+            .WithNewVersion("1.2.75.458")
+            .Build();
+        using var operation = new VeredictProbingUpdateOperation(package, new InstallOptions());
+        string defaultMessage = operation.Metadata.FailureMessage;
+
+        var veredict = await operation.ProbeProcessVeredict(26, []);
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.Equal(defaultMessage, operation.Metadata.FailureMessage);
+        Assert.False(operation.FailedBecauseApplicationRunning);
+        Assert.False(PackageOperation.CanRetryClosingRunningApp(operation));
     }
 
     [Fact]

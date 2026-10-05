@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -126,7 +127,7 @@ public partial class MainWindow : Window
     private bool _maxButtonPressed;
     private TrayService? _trayService;
     private bool _allowClose;
-    private int _isQuitting;
+    private readonly ApplicationShutdownCoordinator _shutdownCoordinator = new();
 
     // Saved outer size (DIPs) awaiting a native, exact restore in OnOpened on Windows.
     private double _pendingRestoreWidth;
@@ -139,6 +140,7 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim _modalTransitionSemaphore = new(1, 1);
     private readonly List<ImmersiveDialog> _modalStack = new();
     private readonly Dictionary<ImmersiveDialog, Control?> _modalFocusHistory = new();
+    private readonly Dictionary<ImmersiveDialog, (double MinWidth, double MinHeight)> _modalMinimumSizeHistory = new();
     private readonly List<UniGetUiWebView> _webViewsHiddenForModal = new();
     private IDisposable? _modalTitleSubscription;
     private Control? _focusBeforeModal;
@@ -165,6 +167,15 @@ public partial class MainWindow : Window
         Instance = this;
         DataContext = new MainWindowViewModel();
         InitializeComponent();
+        if (OperatingSystem.IsWindows())
+        {
+            // WinUI's caption button uses ChromeRestore (U+E923). Windows 11 supplies it
+            // through Segoe Fluent Icons; Windows 10 exposes the same symbol in MDL2 Assets.
+            RestoreIcon.FontFamily = new FontFamily(
+                OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)
+                    ? "Segoe Fluent Icons"
+                    : "Segoe MDL2 Assets");
+        }
         SetupTitleBar();
         SetupTitleBarFocusOpacity();
         SetupResponsiveRail();
@@ -172,6 +183,7 @@ public partial class MainWindow : Window
         RestoreGeometry();
 
         KeyDown += Window_KeyDown;
+        AddHandler(KeyDownEvent, Window_KeyDownTunnel, RoutingStrategies.Tunnel);
         ViewModel.CurrentPageChanged += OnCurrentPageChanged;
         // Title-bar back button: visible whenever there's somewhere to go back to (mirrors WinUI's TitleBar.IsBackButtonVisible).
         ViewModel.CanGoBackChanged += (_, canGoBack) => BackButton.IsVisible = canGoBack;
@@ -264,6 +276,18 @@ public partial class MainWindow : Window
         _trayService = null;
     }
 
+    private void Window_KeyDownTunnel(object? sender, KeyEventArgs e)
+    {
+        if (e.Key is not Key.Tab || !e.KeyModifiers.HasFlag(KeyModifiers.Control) || ModalLayer.IsVisible)
+            return;
+
+        _focusSidebarSelectionOnNextPageChange = true;
+        ViewModel.NavigateTo(e.KeyModifiers.HasFlag(KeyModifiers.Shift)
+            ? MainWindowViewModel.GetPreviousPage(ViewModel.CurrentPage_t)
+            : MainWindowViewModel.GetNextPage(ViewModel.CurrentPage_t));
+        e.Handled = true;
+    }
+
     private void Window_KeyDown(object? sender, KeyEventArgs e)
     {
         // A WinUI ContentDialog is a true modal scope: background navigation and package-page
@@ -281,14 +305,7 @@ public partial class MainWindow : Window
         bool isCtrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         bool isShift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
 
-        if (e.Key == Key.Tab && isCtrl)
-        {
-            _focusSidebarSelectionOnNextPageChange = true;
-            ViewModel.NavigateTo(isShift
-                ? MainWindowViewModel.GetPreviousPage(ViewModel.CurrentPage_t)
-                : MainWindowViewModel.GetNextPage(ViewModel.CurrentPage_t));
-        }
-        else if (!isCtrl && !isShift && e.Key == Key.F1)
+        if (!isCtrl && !isShift && e.Key == Key.F1)
         {
             ViewModel.NavigateTo(PageType.Help);
         }
@@ -322,6 +339,11 @@ public partial class MainWindow : Window
             });
             e.Handled = true;
         }
+        else if (isCtrl && !isShift && e.Key == Key.D7)
+        {
+            ShowMoreMenu();
+            e.Handled = true;
+        }
         else if (isCtrl && !isShift && e.Key == Key.D)
         {
             (ViewModel.CurrentPageContent as IKeyboardShortcutListener)?.DetailsTriggered();
@@ -340,11 +362,24 @@ public partial class MainWindow : Window
             return;
 
         _focusSidebarSelectionOnNextPageChange = false;
-        Dispatcher.UIThread.Post(() =>
-        {
-            var sidebar = this.GetVisualDescendants().OfType<SidebarView>().FirstOrDefault();
-            sidebar?.FocusSelectedItem();
-        }, DispatcherPriority.Background);
+        Dispatcher.UIThread.Post(() => ActiveSidebar()?.FocusSelectedItem(), DispatcherPriority.Background);
+    }
+
+    private void ShowMoreMenu()
+    {
+        if (!ViewModel.Sidebar.RailVisible && !ViewModel.Sidebar.NavDockVisible && !ViewModel.Sidebar.OverlayActive)
+            ViewModel.Sidebar.IsPaneOpen = true;
+
+        Dispatcher.UIThread.Post(() => ActiveSidebar()?.ShowMoreFlyout(), DispatcherPriority.Background);
+    }
+
+    private SidebarView? ActiveSidebar()
+    {
+        Control host = ViewModel.Sidebar.OverlayActive ? NavFlyout
+            : ViewModel.Sidebar.NavDockVisible ? NavDock
+            : NavRail;
+
+        return host.GetVisualDescendants().OfType<SidebarView>().FirstOrDefault();
     }
 
     private void BackButton_Click(object? sender, RoutedEventArgs e) => ViewModel.NavigateBack();
@@ -383,6 +418,10 @@ public partial class MainWindow : Window
         if (ContentRoot.RowDefinitions.Count < 3)
             return;
 
+        ContentRoot.RowDefinitions[1].Height = ViewModel.OperationsSplitterVisible
+            ? new GridLength(12, GridUnitType.Pixel)
+            : new GridLength(0, GridUnitType.Pixel);
+
         RowDefinition row = ContentRoot.RowDefinitions[2];
         if (ViewModel.OperationsPanelVisible && ViewModel.OperationsPanelExpanded)
         {
@@ -408,7 +447,7 @@ public partial class MainWindow : Window
             return 0;
 
         const double chrome = 42;
-        const double fallbackRow = 68;
+        const double fallbackRow = 56;
 
         double rows = 0;
         int visible = Math.Min(count, 3);
@@ -479,6 +518,13 @@ public partial class MainWindow : Window
     // Re-reads the NavMenuMode setting so the layout switch applies live from the settings page.
     public void RefreshNavigationMode()
         => ViewModel.Sidebar.Mode = SidebarViewModel.ParseMode(Settings.GetValue(Settings.K.NavMenuMode));
+
+    // Let the splitter hover surface replace the separator visually without changing its layout thickness.
+    private void OperationsSplitter_PointerEntered(object? sender, PointerEventArgs e)
+        => OperationsPanelBorder.Classes.Set("splitter-active", true);
+
+    private void OperationsSplitter_PointerExited(object? sender, PointerEventArgs e)
+        => OperationsPanelBorder.Classes.Set("splitter-active", false);
 
     // Light-dismiss: clicking outside the open flyout closes it (no darkening — the layer is transparent).
     private void FlyoutDismiss_PointerPressed(object? sender, PointerPressedEventArgs e)
@@ -960,13 +1006,13 @@ public partial class MainWindow : Window
 
     private void UpdateMaximizeButtonState(bool isMaximized)
     {
-        MaximizeIcon.Data = Geometry.Parse(
-            isMaximized
-                ? "M3,0 H10 V7 H8 V2 H3 Z M0,3 H7 V10 H0 Z"
-                : "M0,0 H10 V10 H0 Z");
-        ToolTip.SetTip(
-            MaximizeButton,
-            CoreTools.Translate(isMaximized ? "Restore" : "Maximize"));
+        MaximizeIcon.IsVisible = !isMaximized;
+        RestoreIcon.IsVisible = isMaximized && OperatingSystem.IsWindows();
+        RestoreFallbackIcon.IsVisible = isMaximized && !OperatingSystem.IsWindows();
+
+        string label = CoreTools.Translate(isMaximized ? "Restore" : "Maximize");
+        ToolTip.SetTip(MaximizeButton, label);
+        AutomationProperties.SetName(MaximizeButton, label);
     }
 
     // True when the WM_NCHITTEST screen point (physical px in lParam) falls within the maximize
@@ -1679,6 +1725,11 @@ public partial class MainWindow : Window
                 if (index >= 0)
                     _modalStack.RemoveAt(index);
                 _modalFocusHistory.Remove(dialog);
+                if (_modalMinimumSizeHistory.Remove(dialog, out var minimumSize))
+                {
+                    dialog.MinWidth = minimumSize.MinWidth;
+                    dialog.MinHeight = minimumSize.MinHeight;
+                }
 
                 if (opened)
                 {
@@ -1725,6 +1776,7 @@ public partial class MainWindow : Window
 
     private void PresentModal(ImmersiveDialog dialog)
     {
+        _modalMinimumSizeHistory.TryAdd(dialog, (dialog.MinWidth, dialog.MinHeight));
         _modalTitleSubscription?.Dispose();
         _modalTitleSubscription = dialog.GetObservable(ImmersiveDialog.TitleProperty)
             .SubscribeValue(title => ModalTitle.Text = title ?? "");
@@ -1803,6 +1855,13 @@ public partial class MainWindow : Window
         ModalSurface.Height = double.IsFinite(dialog.MaxHeight)
             ? Math.Min(dialog.MaxHeight, ModalSurface.MaxHeight)
             : double.NaN;
+
+        if (_modalMinimumSizeHistory.TryGetValue(dialog, out var minimumSize))
+        {
+            dialog.MinWidth = Math.Min(minimumSize.MinWidth, ModalSurface.MaxWidth);
+            double availableContentHeight = Math.Max(0, ModalSurface.MaxHeight - ModalHeader.Height);
+            dialog.MinHeight = Math.Min(minimumSize.MinHeight, availableContentHeight);
+        }
     }
 
     private async Task AnimateModalAsync(bool opening)
@@ -1939,23 +1998,28 @@ public partial class MainWindow : Window
         AvaloniaOperationRegistry.PromptPendingShortcutsIfAny();
     }
 
-    public bool IsQuitting => Interlocked.CompareExchange(ref _isQuitting, 0, 0) == 1;
+    public bool IsQuitting => _shutdownCoordinator.IsQuitting;
 
-    public void QuitApplication()
+    public void QuitApplication() => _ = RequestQuitApplicationAsync();
+
+    internal Task<bool> RequestQuitApplicationAsync(Action? onAuthorized = null) =>
+        _shutdownCoordinator.RequestAsync(
+            () => ViewModel.CanShutdownAsync(),
+            ShutdownApplicationAsync,
+            onAuthorized);
+
+    private async Task ShutdownApplicationAsync()
     {
-        if (Interlocked.Exchange(ref _isQuitting, 1) == 1)
-            return;
-
         _allowClose = true;
         ReleaseWindowResources();
 
         if (IsVisible)
             Hide();
 
-        _ = QuitApplicationAsync();
+        await StopAndExitApplicationAsync();
     }
 
-    private static async Task QuitApplicationAsync()
+    private static async Task StopAndExitApplicationAsync()
     {
         Logger.Warn("Quitting UniGetUI");
         try
