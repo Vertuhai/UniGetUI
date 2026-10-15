@@ -6,6 +6,8 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.VisualTree;
+using UniGetUI.Avalonia.Infrastructure;
 using UniGetUI.Avalonia.Views.Controls;
 using UniGetUI.Core.Tools;
 using ICommand = System.Windows.Input.ICommand;
@@ -54,6 +56,7 @@ public class SettingsCard : UserControl
     private Control? _headerIcon;
     private object? _rightContent;
     private bool _isClickEnabled;
+    private bool _pointerPressed;
 
     /// <summary>
     /// Keep compact toggle-style content at the right edge when the card wraps.
@@ -134,8 +137,16 @@ public class SettingsCard : UserControl
     public new CornerRadius CornerRadius
     {
         get => _border.CornerRadius;
-        set => _border.CornerRadius = value;
+        set => _border.CornerRadius = AdaptCorners(value);
     }
+
+    // macOS grouped forms use rounder sections, so the standard 8px card corners widen to 12px there.
+    private static CornerRadius AdaptCorners(CornerRadius radius)
+        => MacGlassWindowHelper.IsGlassEnabled()
+            ? new CornerRadius(Widen(radius.TopLeft), Widen(radius.TopRight), Widen(radius.BottomRight), Widen(radius.BottomLeft))
+            : radius;
+
+    private static double Widen(double corner) => corner == 8 ? 12 : corner;
 
     public new Thickness BorderThickness
     {
@@ -229,7 +240,7 @@ public class SettingsCard : UserControl
 
         _border = new Border
         {
-            CornerRadius = new CornerRadius(8),
+            CornerRadius = AdaptCorners(new CornerRadius(8)),
             BorderThickness = new Thickness(1),
             Child = _layoutGrid,
         };
@@ -239,6 +250,8 @@ public class SettingsCard : UserControl
         base.Content = _border;
 
         PointerPressed += OnPointerPressed;
+        PointerReleased += OnPointerReleased;
+        PointerCaptureLost += OnPointerCaptureLost;
         KeyDown += OnKeyDown;
         SizeChanged += (_, e) => UpdateResponsiveLayout(e.NewSize.Width);
         // Keyboard focus keeps the SettingsCard itself as the focus target. A card-specific
@@ -395,8 +408,26 @@ public class SettingsCard : UserControl
 
         // Pointer activation leaves the card's normal stroke untouched; keyboard focus is
         // handled solely by the external focus adorner.
+        _pointerPressed = true;
+        e.Handled = true;
+    }
+
+    private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (!_pointerPressed) return;
+        _pointerPressed = false;
+
+        if (!_isClickEnabled) return;
+        if (e.InitialPressMouseButton is not MouseButton.Left) return;
+        if (!this.GetVisualsAt(e.GetPosition(this)).Any(c => this == c || this.IsVisualAncestorOf(c))) return;
+
         InvokeClick();
         e.Handled = true;
+    }
+
+    private void OnPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
+    {
+        _pointerPressed = false;
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs e)

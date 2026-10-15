@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Controls.Shapes;
@@ -49,6 +50,8 @@ public partial class PackageDetailsWindow : UniGetUI.Avalonia.Views.DialogPages.
 
     /// <summary>True when the user confirmed the main action (install/update/uninstall) without extras.</summary>
     public bool ShouldProceedWithOperation { get; private set; }
+
+    public string? InstallVersion { get; init; }
 
     private readonly PackageDetailsViewModel _vm;
     private readonly TEL_InstallReferral _referral;
@@ -665,6 +668,16 @@ public partial class PackageDetailsWindow : UniGetUI.Avalonia.Views.DialogPages.
         foreach (var container in ScreenshotPips.GetRealizedContainers())
         {
             int index = ScreenshotPips.IndexFromContainer(container);
+            Button? pip = container as Button
+                ?? container.GetVisualDescendants().OfType<Button>().FirstOrDefault();
+            if (pip is not null)
+            {
+                AutomationProperties.SetName(
+                    pip,
+                    index == active
+                        ? CoreTools.Translate("Screenshot {0} of {1}, current", index + 1, _vm.ScreenshotCount)
+                        : CoreTools.Translate("Screenshot {0} of {1}", index + 1, _vm.ScreenshotCount));
+            }
             Ellipse? ellipse = container is Button { Content: Ellipse direct }
                 ? direct
                 : container.GetVisualDescendants()
@@ -1096,6 +1109,8 @@ public partial class PackageDetailsWindow : UniGetUI.Avalonia.Views.DialogPages.
             interactive: interactive,
             no_integrity: no_integrity,
             remove_data: remove_data);
+        if (role is OperationType.Install && !string.IsNullOrEmpty(InstallVersion))
+            opts.Version = InstallVersion;
 
         if (PackageOperation.HasPendingOperation(pkg, role)) return;
 

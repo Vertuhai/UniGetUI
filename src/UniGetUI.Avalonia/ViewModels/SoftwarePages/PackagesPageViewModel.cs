@@ -9,7 +9,6 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
-using Avalonia.Platform;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -173,6 +172,9 @@ public partial class PackagesPageViewModel : ViewModelBase
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private bool _backgroundTextVisible;
     [ObservableProperty] private bool _loadingImageVisible;
+    private static readonly Lazy<Bitmap?> _loadingImage =
+        new(() => BitmapLoader.TryLoadAsset("avares://UniGetUI/Assets/Images/launcher.png"));
+    public Bitmap? LoadingImage => _loadingImage.Value;
     [ObservableProperty] private Bitmap? _noPackagesImage;
     [ObservableProperty] private bool _noPackagesImageVisible;
     [ObservableProperty] private string _backgroundText = "";
@@ -253,8 +255,7 @@ public partial class PackagesPageViewModel : ViewModelBase
         NoMatchesText = data.NoMatches_BackgroundText;
         if (_showPackageIllustrations && !string.IsNullOrEmpty(data.NoPackages_ImagePath))
         {
-            using var stream = AssetLoader.Open(new Uri(data.NoPackages_ImagePath));
-            NoPackagesImage = new Bitmap(stream);
+            NoPackagesImage = BitmapLoader.TryLoadAsset(data.NoPackages_ImagePath);
         }
         _noPackagesSubtitleBase = data.NoPackages_SubtitleText_Base;
         _stillLoadingSubtitle = data.MainSubtitle_StillLoading;
@@ -388,8 +389,13 @@ public partial class PackagesPageViewModel : ViewModelBase
     }
 
     /// <summary>Adds a thin vertical separator to the toolbar.</summary>
-    public void AddToolbarSeparator(int index = -1)
+    /// <param name="subgroup">Separates closely related actions; the macOS glass toolbar omits it so
+    /// they share one capsule.</param>
+    public void AddToolbarSeparator(int index = -1, bool subgroup = false)
     {
+        if (subgroup && MacGlassWindowHelper.IsGlassEnabled())
+            return;
+
         object? borderResource = null;
         Application.Current?.Resources.TryGetResource(
             "AppBorderBrush",
@@ -470,16 +476,23 @@ public partial class PackagesPageViewModel : ViewModelBase
 
         if (e.ProceduralChange)
         {
+            var added = new List<PackageWrapper>();
             foreach (var pkg in e.AddedPackages)
             {
                 if (_wrappedPackages.Any(w => w.Package.GetVersionedHash() == pkg.GetVersionedHash())) continue;
-                _wrappedPackages.Add(new PackageWrapper(pkg, this));
+                var wrapper = new PackageWrapper(pkg, this);
+                _wrappedPackages.Add(wrapper);
+                added.Add(wrapper);
                 AddPackageToSourcesList(pkg);
             }
             var toRemove = _wrappedPackages
                 .Where(w => e.RemovedPackages.Any(r => r.GetVersionedHash() == w.Package.GetVersionedHash()))
                 .ToList();
             foreach (var wrapper in toRemove) { wrapper.Dispose(); _wrappedPackages.Remove(wrapper); }
+
+            var filter = BuildPackageFilter(out string query);
+            FilteredPackages.ApplyChanges(toRemove, added.Where(filter));
+            UpdateFilteredState(query);
         }
         else
         {
@@ -491,8 +504,8 @@ public partial class PackagesPageViewModel : ViewModelBase
                 _wrappedPackages.Add(new PackageWrapper(pkg, this));
                 AddPackageToSourcesList(pkg);
             }
+            FilterPackages();
         }
-        FilterPackages();
     }
 
     private void Loader_FinishedLoading(object? sender, EventArgs e)
@@ -639,26 +652,38 @@ public partial class PackagesPageViewModel : ViewModelBase
         }
         else
         {
-            FilterPackages(fromQuery: true);
+            FilterPackages();
         }
     }
 
-    public void FilterPackages(bool fromQuery = false)
+    public void FilterPackages()
+    {
+        var filter = BuildPackageFilter(out string query);
+        var results = FilteredPackages.ApplyToList(_wrappedPackages.Where(filter)).ToList();
+
+        FilteredPackages.Clear();
+        foreach (var w in results) FilteredPackages.Add(w);
+
+        UpdateFilteredState(query);
+    }
+
+    private Func<PackageWrapper, bool> BuildPackageFilter(out string query)
     {
         var filters = new List<Func<string, string>>();
         if (!UpperLowerCase) filters.Add(FilterHelpers.NormalizeCase);
         if (IgnoreSpecialChars) filters.Add(FilterHelpers.NormalizeSpecialCharacters);
 
-        string query = _searchQuery;
-        foreach (var f in filters) query = f(query);
+        string normalizedQuery = _searchQuery;
+        foreach (var f in filters) normalizedQuery = f(normalizedQuery);
+        query = normalizedQuery;
 
         Func<IPackage, bool> matchFunc = SearchMode switch
         {
-            SearchMode.Name => pkg => FilterHelpers.NameContains(pkg, query, filters),
-            SearchMode.Id => pkg => FilterHelpers.IdContains(pkg, query, filters),
-            SearchMode.Exact => pkg => FilterHelpers.NameOrIdExactMatch(pkg, query, filters),
+            SearchMode.Name => pkg => FilterHelpers.NameContains(pkg, normalizedQuery, filters),
+            SearchMode.Id => pkg => FilterHelpers.IdContains(pkg, normalizedQuery, filters),
+            SearchMode.Exact => pkg => FilterHelpers.NameOrIdExactMatch(pkg, normalizedQuery, filters),
             SearchMode.Similar => _ => true,
-            _ => pkg => FilterHelpers.NameOrIdContains(pkg, query, filters),
+            _ => pkg => FilterHelpers.NameOrIdContains(pkg, normalizedQuery, filters),
         };
 
         var (visibleSources, visibleManagers) = GetSelectedSourceFilters();
@@ -673,13 +698,11 @@ public partial class PackagesPageViewModel : ViewModelBase
                         && visibleManagers.Contains(pkg.Manager)
                     );
 
-        var results = FilteredPackages.ApplyToList(
-            _wrappedPackages.Where(w => matchFunc(w.Package) && sourceFilter(w.Package))
-        ).ToList();
+        return w => matchFunc(w.Package) && sourceFilter(w.Package);
+    }
 
-        FilteredPackages.Clear();
-        foreach (var w in results) FilteredPackages.Add(w);
-
+    private void UpdateFilteredState(string query)
+    {
         UpdateSubtitle();
         PackageCountUpdated?.Invoke();
 
@@ -689,7 +712,7 @@ public partial class PackagesPageViewModel : ViewModelBase
         {
             BackgroundText = _stillLoadingSubtitle;
             BackgroundTextVisible = true;
-            LoadingImageVisible = _showPackageIllustrations;
+            LoadingImageVisible = _showPackageIllustrations && LoadingImage is not null;
             NoPackagesImageVisible = false;
         }
         else if (FilteredPackages.Count == 0)
@@ -1020,6 +1043,18 @@ public partial class PackagesPageViewModel : ViewModelBase
     }
 
     // ─── Subtitle ─────────────────────────────────────────────────────────────
+    // Page-specific state appended to the subtitle, e.g. an editor's unsaved-changes marker.
+    private string _subtitleSuffix = "";
+    public string SubtitleSuffix
+    {
+        get => _subtitleSuffix;
+        set
+        {
+            _subtitleSuffix = value;
+            UpdateSubtitle();
+        }
+    }
+
     public void UpdateSubtitle()
     {
         if (Loader.IsLoading || (LoadsOnStart && Loader.HasPendingInitialLoad))
@@ -1040,13 +1075,13 @@ public partial class PackagesPageViewModel : ViewModelBase
             if (_showLastCheckedTime)
                 r += " " + CoreTools.Translate("(Last checked: {0})", _lastLoadTime.ToString(CultureInfo.CurrentCulture));
 
-            Subtitle = r;
+            Subtitle = r + SubtitleSuffix;
         }
         else
         {
             Subtitle = _noPackagesSubtitleBase + (_showLastCheckedTime
                 ? " " + CoreTools.Translate("(Last checked: {0})", _lastLoadTime.ToString(CultureInfo.CurrentCulture))
-                : "");
+                : "") + SubtitleSuffix;
         }
     }
 
@@ -1073,7 +1108,7 @@ public partial class PackagesPageViewModel : ViewModelBase
     {
         MegaQueryVisible = false;
         _searchQuery = query?.Trim() ?? "";
-        FilterPackages(fromQuery: true);
+        FilterPackages();
     }
 
     // ─── Keyboard / search-box actions (called by the View's interface impls) ──
@@ -1104,7 +1139,7 @@ public partial class PackagesPageViewModel : ViewModelBase
     public void HandleSearchSubmitted()
     {
         if (MegaQueryBoxEnabled) SubmitSearch();
-        else FilterPackages(fromQuery: true);
+        else FilterPackages();
     }
 
     // ─── Operation launchers ─────────────────────────────────────────────────
@@ -1112,12 +1147,14 @@ public partial class PackagesPageViewModel : ViewModelBase
         IEnumerable<IPackage> packages,
         bool? elevated = null,
         bool? interactive = null,
-        bool? no_integrity = null)
+        bool? no_integrity = null,
+        string? version = null)
     {
         foreach (var pkg in packages)
         {
             var opts = await InstallOptionsFactory.LoadApplicableAsync(
                 pkg, elevated: elevated, interactive: interactive, no_integrity: no_integrity);
+            if (!string.IsNullOrEmpty(version)) opts.Version = version;
             if (PackageOperation.HasPendingOperation(pkg, OperationType.Install)) continue;
             var op = new InstallPackageOperation(pkg, opts);
             op.OperationSucceeded += (_, _) => TelemetryHandler.InstallPackage(pkg, TEL_OP_RESULT.SUCCESS, TEL_InstallReferral.DIRECT_SEARCH);

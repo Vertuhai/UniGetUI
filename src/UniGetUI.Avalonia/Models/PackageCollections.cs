@@ -6,6 +6,7 @@ using Avalonia;
 using Avalonia.Collections;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using UniGetUI.Avalonia.Infrastructure;
 using UniGetUI.Avalonia.ViewModels.Pages;
 using UniGetUI.Avalonia.Views.Controls;
 using UniGetUI.Core.Logging;
@@ -203,6 +204,20 @@ public sealed class PackageWrapper : INotifyPropertyChanged, IDisposable, IPacka
     public string InstallerHostText { get; private set; } = "";
     public string? InstallerHostTooltip { get; private set; }
 
+    public string VersionAutomationName =>
+        InstalledVersionIsUnverified && InstalledVersionTooltip is { } notice
+            ? $"{VersionComboString}, {notice}"
+            : VersionComboString;
+
+    public string NewVersionAutomationName =>
+        WithInstallerHostWarning(Package.NewVersionString);
+
+    public string InstallerHostAutomationName =>
+        WithInstallerHostWarning(InstallerHostText);
+
+    private string WithInstallerHostWarning(string value) =>
+        InstallerHostChanged ? $"{value}, {InstallerHostChangeTooltip}" : value;
+
     public string DownloadSizeText { get; private set; } = "";
     public long DownloadSizeBytes { get; private set; }
 
@@ -365,6 +380,7 @@ public sealed class PackageWrapper : INotifyPropertyChanged, IDisposable, IPacka
         InstallerHostTooltip = urls.Length > 0 ? urls : null;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InstallerHostText)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InstallerHostTooltip)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InstallerHostAutomationName)));
     }
 
     private static bool TryGetCachedInstallerHost(long hash, out (string Host, string Urls) entry)
@@ -620,6 +636,14 @@ public sealed class PackageWrapper : INotifyPropertyChanged, IDisposable, IPacka
                         this,
                         new PropertyChangedEventArgs(nameof(InstallerHostChangeTooltip))
                     );
+                    PropertyChanged?.Invoke(
+                        this,
+                        new PropertyChangedEventArgs(nameof(NewVersionAutomationName))
+                    );
+                    PropertyChanged?.Invoke(
+                        this,
+                        new PropertyChangedEventArgs(nameof(InstallerHostAutomationName))
+                    );
                 });
             }
             catch (Exception ex)
@@ -754,7 +778,7 @@ public sealed class PackageWrapper : INotifyPropertyChanged, IDisposable, IPacka
     {
         var info = new FileInfo(filePath);
         if (!info.Exists || info.Length == 0) return null;
-        return TryDecodeIcon(() => { using var fs = File.OpenRead(filePath); return DecodeDownscaled(fs); }, filePath);
+        return TryDecodeIcon(() => { using var ms = BitmapLoader.ReadFile(filePath); return DecodeDownscaled(ms); }, filePath);
     }
 
     private static Bitmap? TryDecodeIcon(byte[] bytes, string source)
@@ -906,24 +930,59 @@ public sealed class ObservablePackageCollection : AvaloniaList<PackageWrapper>
         foreach (var w in this) w.IsChecked = false;
     }
 
+    public void ApplyChanges(IEnumerable<PackageWrapper> removed, IEnumerable<PackageWrapper> added)
+        => ApplyChanges(this, removed, added, GetOrderComparer());
+
+    internal static void ApplyChanges<T>(IList<T> list, IEnumerable<T> removed, IEnumerable<T> added, IComparer<T> comparer)
+    {
+        foreach (var item in removed)
+        {
+            int index = IndexOfReference(list, item);
+            if (index >= 0) list.RemoveAt(index);
+        }
+
+        foreach (var item in added)
+        {
+            int low = 0, high = list.Count;
+            while (low < high)
+            {
+                int mid = low + (high - low) / 2;
+                if (comparer.Compare(list[mid], item) <= 0) low = mid + 1;
+                else high = mid;
+            }
+            list.Insert(low, item);
+        }
+    }
+
+    private static int IndexOfReference<T>(IList<T> list, T item)
+    {
+        for (int i = 0; i < list.Count; i++)
+            if (ReferenceEquals(list[i], item)) return i;
+        return -1;
+    }
+
     public void SortBy(Sorter sorter) => CurrentSorter = sorter;
 
     public void SetSortDirection(bool ascending) => _ascending = ascending;
 
     /// <summary>Returns <paramref name="items"/> in the current sort order.</summary>
     public IEnumerable<PackageWrapper> ApplyToList(IEnumerable<PackageWrapper> items)
+        => items.OrderBy(w => w, GetOrderComparer());
+
+    private IComparer<PackageWrapper> GetOrderComparer()
     {
-        var comparer = Comparer<PackageWrapper>.Create((a, b) => Compare(a, b, CurrentSorter));
+        Sorter sorter = CurrentSorter;
+        bool ascending = _ascending;
 
-        if (CurrentSorter is Sorter.DownloadSize)
+        return Comparer<PackageWrapper>.Create((a, b) =>
         {
-            var resolvedFirst = items.OrderBy(w => w.DownloadSizeBytes > 0 ? 0 : 1);
-            return _ascending
-                ? resolvedFirst.ThenBy(w => w, comparer)
-                : resolvedFirst.ThenByDescending(w => w, comparer);
-        }
-
-        return _ascending ? items.OrderBy(w => w, comparer) : items.OrderByDescending(w => w, comparer);
+            if (sorter is Sorter.DownloadSize)
+            {
+                int resolved = (a.DownloadSizeBytes > 0 ? 0 : 1).CompareTo(b.DownloadSizeBytes > 0 ? 0 : 1);
+                if (resolved != 0) return resolved;
+            }
+            return ascending ? Compare(a, b, sorter) : Compare(b, a, sorter);
+        });
     }
 
     // Shared by the "Order by" menu (ApplyToList) and the DataGrid's native column sorting

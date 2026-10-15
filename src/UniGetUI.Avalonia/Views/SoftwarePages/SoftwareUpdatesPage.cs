@@ -86,13 +86,13 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         uninstallSelected.Click += (_, _) => _ = LaunchUninstallFromUpdates(vm.FilteredPackages.GetCheckedPackages());
 
         // ── Toolbar buttons ─────────────────────────────────────────────────
-        ViewModel.AddToolbarSeparator();
+        ViewModel.AddToolbarSeparator(subgroup: !ViewModel.DisableReload);
         ViewModel.AddToolbarButton("options", CoreTools.Translate("Update options"),
             () => _ = ShowInstallationOptionsForPackage(SelectedItem), showLabel: false);
-        ViewModel.AddToolbarSeparator();
+        ViewModel.AddToolbarSeparator(subgroup: true);
         ViewModel.AddToolbarButton("console", CoreTools.Translate("Manual update"),
             () => _ = ManualInstallHelper.LaunchManualAsync(SelectedItem, OperationType.Update));
-        ViewModel.AddToolbarSeparator();
+        ViewModel.AddToolbarSeparator(subgroup: true);
         ViewModel.AddToolbarButton("info_round", CoreTools.Translate("Package details"),
             () => _ = ShowDetailsForPackage(SelectedItem), showLabel: false);
         ViewModel.AddToolbarSeparator();
@@ -107,7 +107,7 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         });
         ViewModel.AddToolbarButton("clipboard_list", CoreTools.Translate("Manage ignored updates"),
             () => vm.RequestManageIgnoredCommand.Execute(null));
-        ViewModel.AddToolbarSeparator();
+        ViewModel.AddToolbarSeparator(subgroup: true);
         ViewModel.AddToolbarButton("save_as", CoreTools.Translate("Export to CSV"),
             () => _ = ExportPackagesToCsvAsync());
     }
@@ -340,14 +340,15 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         IEnumerable<IPackage> packages,
         bool? elevated = null,
         bool? interactive = null,
-        bool? no_integrity = null)
+        bool? no_integrity = null,
+        bool background = false)
     {
         foreach (var pkg in packages)
         {
             var opts = await InstallOptionsFactory.LoadApplicableAsync(
                 pkg, elevated: elevated, interactive: interactive, no_integrity: no_integrity);
             if (PackageOperation.HasPendingOperation(pkg, OperationType.Update)) continue;
-            var op = new UpdatePackageOperation(pkg, opts);
+            var op = new UpdatePackageOperation(pkg, opts) { IsBackgroundOperation = background };
             op.OperationSucceeded += (_, _) => TelemetryHandler.UpdatePackage(pkg, TEL_OP_RESULT.SUCCESS);
             op.OperationFailed += (_, _) => TelemetryHandler.UpdatePackage(pkg, TEL_OP_RESULT.FAILED);
             AvaloniaOperationRegistry.Add(op);
@@ -424,7 +425,7 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
             }
             else if (CoreData.GetProcessArguments().Contains("--updateapps"))
             {
-                _ = AvaloniaPackageOperationHelper.UpdateAllAsync();
+                _ = AvaloniaPackageOperationHelper.UpdateAllAsync(background: true);
                 ShowUpgradingPackagesNotification(upgradable);
                 Logger.Warn("Automatic install of updates has been enabled via Command Line (user settings have been overriden)");
             }
@@ -456,7 +457,7 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
 
         if (targets.Count > 0)
         {
-            await LaunchUpdate(targets);
+            await LaunchUpdate(targets, background: true);
             ShowUpgradingPackagesNotification(targets);
         }
         else

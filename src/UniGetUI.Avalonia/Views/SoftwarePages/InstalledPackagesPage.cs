@@ -106,13 +106,13 @@ public class InstalledPackagesPage : AbstractPackagesPage
             vm.FilteredPackages.GetCheckedPackages(), TEL_InstallReferral.ALREADY_INSTALLED);
 
         // ── Toolbar buttons ─────────────────────────────────────────────────
-        ViewModel.AddToolbarSeparator();
+        ViewModel.AddToolbarSeparator(subgroup: !ViewModel.DisableReload);
         ViewModel.AddToolbarButton("options", CoreTools.Translate("Uninstall options"),
             () => _ = ShowInstallationOptionsForPackage(SelectedItem), showLabel: false);
-        ViewModel.AddToolbarSeparator();
+        ViewModel.AddToolbarSeparator(subgroup: true);
         ViewModel.AddToolbarButton("console", CoreTools.Translate("Manual uninstall"),
             () => _ = ManualInstallHelper.LaunchManualAsync(SelectedItem, OperationType.Uninstall));
-        ViewModel.AddToolbarSeparator();
+        ViewModel.AddToolbarSeparator(subgroup: true);
         ViewModel.AddToolbarButton("info_round", CoreTools.Translate("Package details"),
             () => _ = ShowDetailsForPackage(SelectedItem), showLabel: false);
         ViewModel.AddToolbarSeparator();
@@ -129,7 +129,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
         });
         ViewModel.AddToolbarButton("clipboard_list", CoreTools.Translate("Manage ignored updates"),
             () => vm.RequestManageIgnoredCommand.Execute(null));
-        ViewModel.AddToolbarSeparator();
+        ViewModel.AddToolbarSeparator(subgroup: true);
         ViewModel.AddToolbarButton("add_to", CoreTools.Translate("Add selection to bundle"),
             () => _ = ExportSelectionToBundleAsync(vm));
         ViewModel.AddToolbarButton("save_as", CoreTools.Translate("Export to CSV"),
@@ -383,7 +383,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
             await PackageBundlesLoader.Instance.AddPackagesAsync(packages);
     }
 
-    private static async Task LaunchUninstall(
+    internal static async Task LaunchUninstall(
         IEnumerable<IPackage> packages,
         bool? elevated = null,
         bool? interactive = null,
@@ -405,7 +405,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
         }
     }
 
-    private static async Task LaunchUpdate(IPackage? package, bool? elevated = null)
+    internal static async Task LaunchUpdate(IPackage? package, bool? elevated = null)
     {
         // Updates must run on the upgradable instance: the installed one reports
         // NewVersionString == VersionString, which managers read as "nothing to do".

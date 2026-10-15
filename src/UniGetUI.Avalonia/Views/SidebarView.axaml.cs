@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Avalonia;
 using Avalonia.Animation;
 using Avalonia.Animation.Easings;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
@@ -51,6 +52,7 @@ public partial class SidebarView : BaseView<SidebarViewModel>
     public SidebarView()
     {
         InitializeComponent();
+        PlatformShortcuts.AdaptAcceleratorKeys(this);
 
         NavigationPillTopCap.RenderTransform = _pillTopCapTranslate;
         _pillStemTransform.Children.Add(_pillStemScale);
@@ -78,6 +80,13 @@ public partial class SidebarView : BaseView<SidebarViewModel>
         base.OnDataContextChanged(e);
         if (DataContext is SidebarViewModel vm)
         {
+            if (!vm.SoftwareCatalogEnabled)
+            {
+                NavListBox.Items.Remove(CatalogNavBtn);
+                NavListBox.Items.Remove(CatalogEditorNavBtn);
+            }
+            AssignShortcutKeys(MainWindowViewModel.GetShortcutPages(vm.SoftwareCatalogEnabled));
+
             vm.PropertyChanged += (_, args) =>
             {
                 if (args.PropertyName == nameof(SidebarViewModel.SelectedPageType))
@@ -87,6 +96,31 @@ public partial class SidebarView : BaseView<SidebarViewModel>
             SyncListBoxSelection(vm.SelectedPageType);
         }
     }
+
+    // Announces each item's Ctrl/Cmd+number shortcut, which shifts when the catalog is enabled.
+    private void AssignShortcutKeys(PageType[] pages)
+    {
+        string modifier = OperatingSystem.IsMacOS() ? "Cmd" : "Ctrl";
+        for (int i = 0; i < pages.Length; i++)
+        {
+            if (NavButtonFor(pages[i]) is { } button)
+                AutomationProperties.SetAcceleratorKey(button, $"{modifier}+{i + 1}");
+        }
+        AutomationProperties.SetAcceleratorKey(MoreNavBtn, $"{modifier}+{pages.Length + 1}");
+    }
+
+    private ListBoxItem? NavButtonFor(PageType page) => page switch
+    {
+        PageType.Catalog => CatalogNavBtn,
+        PageType.Discover => DiscoverNavBtn,
+        PageType.Updates => UpdatesNavBtn,
+        PageType.Installed => InstalledNavBtn,
+        PageType.Bundles => BundlesNavBtn,
+        PageType.CatalogEditor => CatalogEditorNavBtn,
+        PageType.Settings => SettingsNavBtn,
+        PageType.Managers => ManagersNavBtn,
+        _ => null,
+    };
 
     private void SyncListBoxSelection(PageType page)
     {
@@ -101,6 +135,8 @@ public partial class SidebarView : BaseView<SidebarViewModel>
             PageType.Updates => UpdatesNavBtn,
             PageType.Installed => InstalledNavBtn,
             PageType.Bundles => BundlesNavBtn,
+            PageType.Catalog => CatalogNavBtn,
+            PageType.CatalogEditor => CatalogEditorNavBtn,
             _ => null,
         };
         FooterNavListBox.SelectedItem = page switch
