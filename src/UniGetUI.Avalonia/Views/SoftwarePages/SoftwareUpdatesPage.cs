@@ -28,6 +28,8 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
     private MenuItem? _menuSkipHash;
     private MenuItem? _menuDownloadInstaller;
     private MenuItem? _menuOpenInstallLocation;
+    private MenuItem? _menuReleaseNotes;
+    private IPackage? _releaseNotesPackage;
 
     public SoftwareUpdatesPage() : base(new PackagesPageData
     {
@@ -98,7 +100,10 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         ViewModel.AddToolbarSeparator();
         ViewModel.AddToolbarButton("pin", CoreTools.Translate("Ignore selected packages"), async () =>
         {
-            foreach (var pkg in vm.FilteredPackages.GetCheckedPackages())
+            var packages = vm.FilteredPackages.GetCheckedPackages().ToList();
+            if (MainWindow.Instance is not { } window
+                || !await IgnoreUpdatesConfirmationDialog.ConfirmAsync(window, packages)) return;
+            foreach (var pkg in packages)
             {
                 await pkg.AddToIgnoredUpdatesAsync();
                 UpgradablePackagesLoader.Instance.Remove(pkg);
@@ -249,6 +254,13 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         };
         menuDetails.Click += (_, _) => _ = ShowDetailsForPackage(SelectedItem);
 
+        _menuReleaseNotes = new MenuItem
+        {
+            Header = CoreTools.Translate("Release notes"),
+            Icon = LoadMenuIcon("megaphone"),
+        };
+        _menuReleaseNotes.Click += (_, _) => _ = ShowReleaseNotesForPackage(SelectedItem);
+
         var menu = new ContextMenu();
         menu.Items.Add(menuUpdate);
         menu.Items.Add(new Separator());
@@ -268,6 +280,7 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         menu.Items.Add(menuSkipVersion);
         menu.Items.Add(menuPause);
         menu.Items.Add(new Separator());
+        menu.Items.Add(_menuReleaseNotes);
         menu.Items.Add(menuDetails);
 
         return menu;
@@ -276,7 +289,8 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
     protected override void WhenShowingContextMenu(IPackage package)
     {
         if (_menuAsAdmin is null || _menuInteractive is null || _menuSkipHash is null
-            || _menuDownloadInstaller is null || _menuOpenInstallLocation is null)
+            || _menuDownloadInstaller is null || _menuOpenInstallLocation is null
+            || _menuReleaseNotes is null)
         {
             Logger.Warn("Context menu items are null on SoftwareUpdatesPage");
             return;
@@ -289,7 +303,34 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         _menuDownloadInstaller.IsEnabled = caps.CanDownloadInstaller;
         _menuOpenInstallLocation.IsEnabled =
             package.Manager.DetailsHelper.GetInstallLocation(package) is not null;
+
+        _releaseNotesPackage = package;
+        if (!caps.SupportsReleaseNotes)
+            _menuReleaseNotes.IsEnabled = false;
+        else if (package.Details.IsPopulated)
+            _menuReleaseNotes.IsEnabled = HasReleaseNotes(package.Details);
+        else
+        {
+            _menuReleaseNotes.IsEnabled = false;
+            _ = UpdateReleaseNotesAvailabilityAsync(package);
+        }
     }
+
+    private async Task UpdateReleaseNotesAvailabilityAsync(IPackage package)
+    {
+        await package.Details.Load();
+        if (_menuReleaseNotes is not null && ReferenceEquals(_releaseNotesPackage, package))
+            _menuReleaseNotes.IsEnabled = HasReleaseNotes(package.Details);
+    }
+
+    private static bool HasReleaseNotes(IPackageDetails details) =>
+        GetReleaseNotesUrl(details) is not null || !string.IsNullOrWhiteSpace(details.ReleaseNotes);
+
+    private static Uri? GetReleaseNotesUrl(IPackageDetails details) =>
+        details.ReleaseNotesUrl is { IsAbsoluteUri: true } url
+        && (url.Scheme == Uri.UriSchemeHttps || url.Scheme == Uri.UriSchemeHttp)
+            ? url
+            : null;
 
     // ─── Abstract action overrides ────────────────────────────────────────────
     protected override void PerformMainPackageAction(IPackage? package)
@@ -335,6 +376,19 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     }
 
+    private async Task ShowReleaseNotesForPackage(IPackage? package)
+    {
+        if (package is null) return;
+
+        if (!package.Details.IsPopulated)
+            await package.Details.Load();
+
+        if (GetReleaseNotesUrl(package.Details) is { } url)
+            CoreTools.Launch(url.AbsoluteUri);
+        else if (!string.IsNullOrWhiteSpace(package.Details.ReleaseNotes))
+            await ShowDetailsForPackage(package);
+    }
+
     // ─── Operation launchers ──────────────────────────────────────────────────
     private static async Task LaunchUpdate(
         IEnumerable<IPackage> packages,
@@ -356,9 +410,14 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         }
     }
 
+    // Every row on this page is checked by default, so one click here could uninstall every package with an update.
     private static async Task LaunchUninstallFromUpdates(IEnumerable<IPackage> packages)
     {
-        foreach (var pkg in packages)
+        var list = packages.ToList();
+        if (list.Count == 0 || MainWindow.Instance is not { } window) return;
+        if (!await UninstallConfirmationDialog.ConfirmAsync(window, list)) return;
+
+        foreach (var pkg in list)
         {
             var opts = await InstallOptionsFactory.LoadApplicableAsync(pkg);
             if (PackageOperation.HasPendingOperation(pkg, OperationType.Uninstall)) continue;
@@ -421,13 +480,15 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
             else if (shouldAutoInstall)
             {
                 MaintenanceScheduler.MarkAutoInstallHandled();
-                await LaunchScheduledUpdate(upgradable);
+                if (await LaunchScheduledUpdate(upgradable))
+                    QuitAfterAutomaticUpdates.QuitWhenOperationsFinish();
             }
             else if (CoreData.GetProcessArguments().Contains("--updateapps"))
             {
-                _ = AvaloniaPackageOperationHelper.UpdateAllAsync(background: true);
+                Task updateAll = AvaloniaPackageOperationHelper.UpdateAllAsync(background: true);
                 ShowUpgradingPackagesNotification(upgradable);
                 Logger.Warn("Automatic install of updates has been enabled via Command Line (user settings have been overriden)");
+                QuitAfterAutomaticUpdates.QuitWhenOperationsFinish(updateAll);
             }
             else
             {
@@ -440,7 +501,7 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
         }
     }
 
-    private static async Task LaunchScheduledUpdate(IReadOnlyList<IPackage> upgradable)
+    private static async Task<bool> LaunchScheduledUpdate(IReadOnlyList<IPackage> upgradable)
     {
         bool markedOnly = MaintenanceScheduleStore.GetInstallTargets()
             is ScheduleInstallTargets.MarkedPackagesOnly;
@@ -467,6 +528,8 @@ public class SoftwareUpdatesPage : AbstractPackagesPage
 
         if (skipped.Count > 0)
             ShowAvailableUpdatesNotification(skipped);
+
+        return targets.Count > 0;
     }
 
     private static void ShowAvailableUpdatesNotification(IReadOnlyList<IPackage> upgradable)

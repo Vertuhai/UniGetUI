@@ -78,6 +78,15 @@ public partial class MainWindow : Window
     // gap — enough for the row to read as separate from the window buttons rather than crowding them.
     private const double MAC_TRAFFIC_LIGHT_INSET = 76;
 
+    // Space between the glass sidebar panel's edge and the close (red) button.
+    private const double MAC_TRAFFIC_LIGHT_PANEL_PADDING = 12;
+
+    // Space between the zoom (green) button and the first title-bar control, when its frame can be read.
+    private const double MAC_TRAFFIC_LIGHT_GAP = 14;
+
+    // Last zoom button frame read on macOS; logged when it changes, to diagnose title-bar alignment.
+    private Rect? _lastMacZoomButtonFrame;
+
     // Last known macOS title-bar height; seeded with the requested height for the window's first layout
     // pass and while fullscreen reports a collapsed decoration margin.
     private double _macTitleBarHeight = 44;
@@ -284,6 +293,16 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(WindowClosingEventArgs e)
     {
+        // The lifetime only closes the window for a session end that App let through, and cancelling
+        // here would still make Avalonia abort the logout.
+        if (e.CloseReason == WindowCloseReason.OSShutdown)
+        {
+            _allowClose = true;
+            ReleaseWindowResources();
+            base.OnClosing(e);
+            return;
+        }
+
         if (!_allowClose && (OperatingSystem.IsMacOS() || !Settings.Get(Settings.K.DisableSystemTray)))
         {
             e.Cancel = true;
@@ -311,8 +330,8 @@ public partial class MainWindow : Window
 
         _focusSidebarSelectionOnNextPageChange = true;
         ViewModel.NavigateTo(e.KeyModifiers.HasFlag(KeyModifiers.Shift)
-            ? MainWindowViewModel.GetPreviousPage(ViewModel.CurrentPage_t, SoftwareCatalogEnabled)
-            : MainWindowViewModel.GetNextPage(ViewModel.CurrentPage_t, SoftwareCatalogEnabled));
+            ? MainWindowViewModel.GetPreviousPage(ViewModel.CurrentPage_t, ViewModel.ShortcutPages)
+            : MainWindowViewModel.GetNextPage(ViewModel.CurrentPage_t, ViewModel.ShortcutPages));
         e.Handled = true;
     }
 
@@ -565,6 +584,8 @@ public partial class MainWindow : Window
     public void RefreshNavigationMode()
         => ViewModel.Sidebar.Mode = SidebarViewModel.ParseMode(Settings.GetValue(Settings.K.NavMenuMode));
 
+    public void ResetNavigationOrder() => ViewModel.Sidebar.ResetNavigationPages();
+
     // Let the splitter hover surface replace the separator visually without changing its layout thickness.
     private void OperationsSplitter_PointerEntered(object? sender, PointerEventArgs e)
         => OperationsPanelBorder.Classes.Set("splitter-active", true);
@@ -641,19 +662,32 @@ public partial class MainWindow : Window
                 }
                 else
                 {
-                    // Pin the row to the traffic lights: top-aligned, offset so its centre line
-                    // matches theirs, and inset far enough to clear the close/minimise/zoom cluster.
+                    // Inset the window buttons inside the floating glass sidebar, on the bar's centre line (the
+                    // search field's), as System Settings does; macOS resets them on every layout pass.
+                    MacGlassWindowHelper.SetWindowButtonsPosition(
+                        this, MAC_GLASS_INSET + MAC_TRAFFIC_LIGHT_PANEL_PADDING, _macTitleBarHeight / 2);
+
+                    // Pin the row to the traffic lights where macOS actually placed them: their position
+                    // changes with the macOS version and the window state, so the constants are only a fallback.
+                    Rect? zoom = MacGlassWindowHelper.GetZoomButtonFrame(this);
+                    if (zoom != _lastMacZoomButtonFrame)
+                    {
+                        _lastMacZoomButtonFrame = zoom;
+                        Logger.Info($"macOS title bar: zoom button at {zoom?.ToString() ?? "unknown"}, window {WindowState}");
+                    }
+
+                    double inset = zoom is { } z ? z.Right + MAC_TRAFFIC_LIGHT_GAP : MAC_TRAFFIC_LIGHT_INSET;
+                    double centerY = zoom is { } c ? c.Center.Y : MAC_TRAFFIC_LIGHT_CENTER_Y;
                     HamburgerPanel.VerticalAlignment = VerticalAlignment.Top;
-                    HamburgerPanel.Margin = new Thickness(
-                        MAC_TRAFFIC_LIGHT_INSET,
-                        MAC_TRAFFIC_LIGHT_CENTER_Y - (MAC_TITLE_BAR_CONTROL_SIZE / 2),
-                        8,
-                        0);
+                    HamburgerPanel.Margin = new Thickness(inset, centerY - (MAC_TITLE_BAR_CONTROL_SIZE / 2), 8, 0);
                 }
             }
 
             this.GetObservable(WindowStateProperty).SubscribeValue(_ => ApplyMacTitleBarLayout());
             this.GetObservable(WindowDecorationMarginProperty).SubscribeValue(_ => ApplyMacTitleBarLayout());
+            // macOS lays the window buttons out again on resize and zoom; follow them.
+            this.GetObservable(ClientSizeProperty).SubscribeValue(_ => ApplyMacTitleBarLayout());
+            Opened += (_, _) => Dispatcher.UIThread.Post(ApplyMacTitleBarLayout, DispatcherPriority.Background);
             NavRail.GetObservable(IsVisibleProperty).SubscribeValue(_ => ApplyMacSidebarLayout());
             NavDock.GetObservable(IsVisibleProperty).SubscribeValue(_ => ApplyMacSidebarLayout());
             SidebarGlass.GetObservable(BoundsProperty).SubscribeValue(_ => UpdateMacWindowSurfaceClip());
@@ -2272,6 +2306,10 @@ public partial class MainWindow : Window
 
     public bool IsQuitting => _shutdownCoordinator.IsQuitting;
 
+    internal bool HasUnsavedWork => ViewModel.HasUnsavedWork;
+
+    internal bool CanQuitWithoutAsking => ViewModel.CanShutdownWithoutAsking;
+
     public void QuitApplication() => _ = RequestQuitApplicationAsync();
 
     internal Task<bool> RequestQuitApplicationAsync(Action? onAuthorized = null) =>
@@ -2294,6 +2332,7 @@ public partial class MainWindow : Window
     private static async Task StopAndExitApplicationAsync()
     {
         Logger.Warn("Quitting UniGetUI");
+        await AvaloniaAutoUpdater.WaitForInstallerHandoffAsync();
         try
         {
             await AvaloniaBootstrapper.StopIpcApiAsync().WaitAsync(TimeSpan.FromSeconds(5));

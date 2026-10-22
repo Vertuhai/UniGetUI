@@ -302,7 +302,7 @@
   "Local": "Lokal",
   "OK": "Greit",
   "Last checked: {0}": "Sist sjekket: {0}",
-  "{0} packages were found, {1} of which match the specified filters.": "{1} pakker ble funnet, hvorav {0} samsvarte med filtrene dine.",
+  "{0} packages were found, {1} of which match the specified filters.": "{0} pakker ble funnet, hvorav {1} samsvarte med filtrene dine.",
   "{0} selected": "{0} valgt",
   "(Last checked: {0})": "(Sist sjekket: {0})",
   "All packages selected": "Alle pakker valgt",
@@ -1091,5 +1091,7 @@
   "Package name": "Pakkenavn",
   "No subfolder": "Ingen undermappe",
   "Enter a name for the new source": "Skriv inn et navn på den nye kilden",
-  "Enter a complete source URL, including the protocol (for example https://)": "Skriv inn en fullstendig kilde-URL, inkludert protokollen (for eksempel https://)"
+  "Enter a complete source URL, including the protocol (for example https://)": "Skriv inn en fullstendig kilde-URL, inkludert protokollen (for eksempel https://)",
+  "Scroll tab list backward": "Rull fanelisten bakover",
+  "Scroll tab list forward": "Rull fanelisten fremover"
 }

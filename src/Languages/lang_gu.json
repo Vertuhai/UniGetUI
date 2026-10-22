@@ -302,7 +302,7 @@
   "Local": "સ્થાનિક",
   "OK": "ઠીક છે",
   "Last checked: {0}": "છેલ્લે તપાસ્યું: {0}",
-  "{0} packages were found, {1} of which match the specified filters.": "{1} packages મળ્યા, જેમાંથી {0} નિર્દિષ્ટ filters સાથે મેળ ખાતા હતા.",
+  "{0} packages were found, {1} of which match the specified filters.": "{0} packages મળ્યા, જેમાંથી {1} નિર્દિષ્ટ filters સાથે મેળ ખાતા હતા.",
   "{0} selected": "{0} પસંદ થયું",
   "(Last checked: {0})": "(છેલ્લે ચકાસાયેલ: {0})",
   "All packages selected": "બધા પેકેજો પસંદ કરવામાં આવ્યા",
@@ -1091,5 +1091,7 @@
   "Package name": "પેકેજનું નામ",
   "No subfolder": "કોઈ ઉપફોલ્ડર નથી",
   "Enter a name for the new source": "નવા સ્ત્રોત માટે નામ દાખલ કરો",
-  "Enter a complete source URL, including the protocol (for example https://)": "પ્રોટોકોલ સહિત સ્ત્રોતનું સંપૂર્ણ URL દાખલ કરો (ઉદાહરણ તરીકે https://)"
+  "Enter a complete source URL, including the protocol (for example https://)": "પ્રોટોકોલ સહિત સ્ત્રોતનું સંપૂર્ણ URL દાખલ કરો (ઉદાહરણ તરીકે https://)",
+  "Scroll tab list backward": "ટૅબ સૂચિ પાછળ સ્ક્રોલ કરો",
+  "Scroll tab list forward": "ટૅબ સૂચિ આગળ સ્ક્રોલ કરો"
 }

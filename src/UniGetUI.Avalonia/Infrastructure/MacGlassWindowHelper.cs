@@ -19,6 +19,11 @@ internal static partial class MacGlassWindowHelper
 
     private const string ObjCRuntime = "/usr/lib/libobjc.A.dylib";
 
+    // NSWindowButton values of the close, minimise and zoom buttons.
+    private const long NSWindowCloseButton = 0;
+    private const long NSWindowMiniaturizeButton = 1;
+    private const long NSWindowZoomButton = 2;
+
     // AppKit NSVisualEffectMaterial / NSVisualEffectBlendingMode / NSVisualEffectState values.
     private const long NSVisualEffectMaterialSidebar = 7;
     private const long NSVisualEffectMaterialMenu = 5;
@@ -256,6 +261,132 @@ internal static partial class MacGlassWindowHelper
         }
     }
 
+    /// <summary>The zoom (green) button's frame in the window, in DIPs from the top-left corner, as macOS
+    /// actually placed it; null when it can't be read. The title-bar row aligns to it.</summary>
+    public static Rect? GetZoomButtonFrame(Window window)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return null;
+
+        try
+        {
+            nint nsWindow = GetNSWindow(window);
+            if (nsWindow == 0)
+                return null;
+
+            nint zoom = objc_msgSend_IntPtr_Long(nsWindow, Sel.StandardWindowButton, NSWindowZoomButton);
+            nint contentView = objc_msgSend_IntPtr(nsWindow, Sel.ContentView);
+            if (zoom == 0 || contentView == 0)
+                return null;
+
+            NSRect frame = ConvertRect(zoom, GetRect(zoom, Sel.Bounds), contentView);
+            NSRect content = GetRect(contentView, Sel.Bounds);
+            if (frame.Width <= 0 || content.Height <= 0)
+                return null;
+
+            // AppKit views measure from the bottom-left unless flipped; Avalonia measures from the top-left.
+            double top = objc_msgSend_Bool(contentView, Sel.IsFlipped)
+                ? frame.Y
+                : content.Height - frame.Y - frame.Height;
+            return new Rect(frame.X, top, frame.Width, frame.Height);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("Could not read the macOS window buttons' position; using the default title-bar inset");
+            Logger.Warn(ex);
+            return null;
+        }
+    }
+
+    /// <summary>Moves the close/minimise/zoom buttons so the first one starts <paramref name="left"/> DIPs from
+    /// the window's left edge and their centre line sits <paramref name="centerY"/> DIPs from its top. macOS
+    /// lays them out again on resize, zoom and full screen, so call it again after each. Inside the floating
+    /// glass sidebar they need the inset System Settings gives them, not the bare title-bar position.</summary>
+    public static void SetWindowButtonsPosition(Window window, double left, double centerY)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        try
+        {
+            nint nsWindow = GetNSWindow(window);
+            if (nsWindow == 0)
+                return;
+
+            nint close = objc_msgSend_IntPtr_Long(nsWindow, Sel.StandardWindowButton, NSWindowCloseButton);
+            nint miniaturize = objc_msgSend_IntPtr_Long(nsWindow, Sel.StandardWindowButton, NSWindowMiniaturizeButton);
+            nint zoom = objc_msgSend_IntPtr_Long(nsWindow, Sel.StandardWindowButton, NSWindowZoomButton);
+            if (close == 0 || miniaturize == 0 || zoom == 0)
+                return;
+
+            // The buttons live in the title-bar view, inside NSTitlebarContainerView; the container is
+            // only as tall as the native title bar, so it grows to hold the buttons at the new centre line.
+            nint titlebarView = objc_msgSend_IntPtr(close, Sel.Superview);
+            nint container = titlebarView == 0 ? 0 : objc_msgSend_IntPtr(titlebarView, Sel.Superview);
+            nint contentView = objc_msgSend_IntPtr(nsWindow, Sel.ContentView);
+            if (container == 0 || contentView == 0)
+                return;
+
+            NSRect closeFrame = GetRect(close, Sel.Frame);
+            NSRect miniaturizeFrame = GetRect(miniaturize, Sel.Frame);
+            double spacing = miniaturizeFrame.X - closeFrame.X;
+            double height = Math.Max(closeFrame.Height, 2 * centerY);
+            NSRect content = GetRect(contentView, Sel.Bounds);
+            NSRect current = GetRect(container, Sel.Frame);
+
+            SetRect(container, Sel.SetFrame, new NSRect(current.X, content.Height - height, current.Width, height));
+            SetRect(titlebarView, Sel.SetFrame, new NSRect(0, 0, current.Width, height));
+
+            // Title-bar view coordinates start at the bottom-left; centre the buttons on the requested line.
+            double y = height - centerY - (closeFrame.Height / 2);
+            nint[] buttons = [close, miniaturize, zoom];
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                objc_msgSend_Void_Point(buttons[i], Sel.SetFrameOrigin, left + (i * spacing), y);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("Could not move the macOS window buttons; keeping their default position");
+            Logger.Warn(ex);
+        }
+    }
+
+    private static void SetRect(nint receiver, nint selector, NSRect rect)
+        => objc_msgSend_Void_Rect(receiver, selector, rect);
+
+    // An NSRect comes back in registers on arm64 and through a hidden pointer (objc_msgSend_stret) on x64.
+    private static NSRect GetRect(nint receiver, nint selector)
+    {
+        if (RuntimeInformation.ProcessArchitecture == Architecture.X64)
+        {
+            objc_msgSend_stret_Rect(out NSRect result, receiver, selector);
+            return result;
+        }
+
+        return objc_msgSend_Rect(receiver, selector);
+    }
+
+    private static NSRect ConvertRect(nint view, NSRect rect, nint toView)
+    {
+        if (RuntimeInformation.ProcessArchitecture == Architecture.X64)
+        {
+            objc_msgSend_stret_Rect_Rect_IntPtr(out NSRect result, view, Sel.ConvertRectToView, rect, toView);
+            return result;
+        }
+
+        return objc_msgSend_Rect_Rect_IntPtr(view, Sel.ConvertRectToView, rect, toView);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct NSRect(double x, double y, double width, double height)
+    {
+        public readonly double X = x;
+        public readonly double Y = y;
+        public readonly double Width = width;
+        public readonly double Height = height;
+    }
+
     private static nint GetNSWindow(TopLevel window)
     {
         if (window.TryGetPlatformHandle() is not { Handle: not 0 } handle)
@@ -299,20 +430,28 @@ internal static partial class MacGlassWindowHelper
         public static readonly nint AccessibilityDisplayShouldIncreaseContrast = sel_registerName("accessibilityDisplayShouldIncreaseContrast");
         public static readonly nint AccessibilityDisplayShouldReduceTransparency = sel_registerName("accessibilityDisplayShouldReduceTransparency");
         public static readonly nint BlendingMode = sel_registerName("blendingMode");
+        public static readonly nint Bounds = sel_registerName("bounds");
         public static readonly nint ContentView = sel_registerName("contentView");
+        public static readonly nint ConvertRectToView = sel_registerName("convertRect:toView:");
+        public static readonly nint Frame = sel_registerName("frame");
         public static readonly nint Count = sel_registerName("count");
         public static readonly nint InvalidateShadow = sel_registerName("invalidateShadow");
+        public static readonly nint IsFlipped = sel_registerName("isFlipped");
         public static readonly nint IsKindOfClass = sel_registerName("isKindOfClass:");
         public static readonly nint Layer = sel_registerName("layer");
         public static readonly nint ObjectAtIndex = sel_registerName("objectAtIndex:");
         public static readonly nint SetCornerRadius = sel_registerName("setCornerRadius:");
+        public static readonly nint SetFrame = sel_registerName("setFrame:");
+        public static readonly nint SetFrameOrigin = sel_registerName("setFrameOrigin:");
         public static readonly nint SetHasShadow = sel_registerName("setHasShadow:");
         public static readonly nint SetMasksToBounds = sel_registerName("setMasksToBounds:");
         public static readonly nint SetMaterial = sel_registerName("setMaterial:");
         public static readonly nint SetState = sel_registerName("setState:");
         public static readonly nint SetWantsLayer = sel_registerName("setWantsLayer:");
         public static readonly nint SharedWorkspace = sel_registerName("sharedWorkspace");
+        public static readonly nint StandardWindowButton = sel_registerName("standardWindowButton:");
         public static readonly nint Subviews = sel_registerName("subviews");
+        public static readonly nint Superview = sel_registerName("superview");
         public static readonly nint Window = sel_registerName("window");
     }
 
@@ -334,6 +473,25 @@ internal static partial class MacGlassWindowHelper
     [LibraryImport(ObjCRuntime, EntryPoint = "objc_msgSend")]
     [return: MarshalAs(UnmanagedType.U1)]
     private static partial bool objc_msgSend_Bool(nint receiver, nint selector);
+
+    [LibraryImport(ObjCRuntime, EntryPoint = "objc_msgSend")]
+    private static partial NSRect objc_msgSend_Rect(nint receiver, nint selector);
+
+    [LibraryImport(ObjCRuntime, EntryPoint = "objc_msgSend")]
+    private static partial NSRect objc_msgSend_Rect_Rect_IntPtr(nint receiver, nint selector, NSRect rect, nint view);
+
+    [LibraryImport(ObjCRuntime, EntryPoint = "objc_msgSend")]
+    private static partial void objc_msgSend_Void_Rect(nint receiver, nint selector, NSRect rect);
+
+    // NSPoint is two doubles, passed in registers on both arm64 and x64.
+    [LibraryImport(ObjCRuntime, EntryPoint = "objc_msgSend")]
+    private static partial void objc_msgSend_Void_Point(nint receiver, nint selector, double x, double y);
+
+    [LibraryImport(ObjCRuntime, EntryPoint = "objc_msgSend_stret")]
+    private static partial void objc_msgSend_stret_Rect(out NSRect result, nint receiver, nint selector);
+
+    [LibraryImport(ObjCRuntime, EntryPoint = "objc_msgSend_stret")]
+    private static partial void objc_msgSend_stret_Rect_Rect_IntPtr(out NSRect result, nint receiver, nint selector, NSRect rect, nint view);
 
     [LibraryImport(ObjCRuntime, EntryPoint = "objc_msgSend")]
     [return: MarshalAs(UnmanagedType.U1)]

@@ -1,0 +1,116 @@
+name: Desktop session
+description: >
+  Sets up a live interactive Windows desktop on this runner over localhost RDP, driven by
+  ironrdp-agent from the IronRDP repo, and leaves it up for later steps of the same job.
+  Exports DESKTOP_SESSION_* environment variables for DesktopSession.psm1. Run the
+  desktop-session-cleanup action with if: always() at the end of the job.
+
+inputs:
+  ironrdp-ref:
+    description: IronRDP commit providing ironrdp-agent and the testing/agentic-rdp harness
+    # IronRDP master at the merge of https://github.com/Devolutions/IronRDP/pull/2189, which
+    # hardened the harness. Pinned so the built agent can be cached by commit; changing it
+    # rebuilds ironrdp-agent once (about 5 minutes).
+    default: 75ee516f34562516bd400dbf6e2ef93de0521f22
+  desktop-size:
+    description: RDP desktop size, as WxH
+    default: 1920x1080
+  artifacts-dir:
+    description: Directory for screenshots, logs and session state; defaults to RUNNER_TEMP/desktop-session
+    default: ''
+
+outputs:
+  agent-path:
+    description: Path to ironrdp-agent.exe (also DESKTOP_SESSION_AGENT)
+    value: ${{ steps.start.outputs.agent-path }}
+  endpoint:
+    description: Named pipe of the ironrdp-agent daemon (also DESKTOP_SESSION_ENDPOINT)
+    value: ${{ steps.start.outputs.endpoint }}
+  pshost-endpoint-path:
+    description: JSON file describing the interactive PSHost endpoint (also DESKTOP_SESSION_PSHOST_ENDPOINT)
+    value: ${{ steps.start.outputs.pshost-endpoint-path }}
+  ironrdp-root:
+    description: IronRDP checkout (also DESKTOP_SESSION_IRONRDP_ROOT)
+    value: ${{ steps.start.outputs.ironrdp-root }}
+  artifacts-dir:
+    description: Artifacts directory (also DESKTOP_SESSION_ARTIFACTS)
+    value: ${{ steps.start.outputs.artifacts-dir }}
+  module-path:
+    description: Path to DesktopSession.psm1 (also DESKTOP_SESSION_MODULE)
+    value: ${{ steps.start.outputs.module-path }}
+  session-id:
+    description: Windows session id of the interactive desktop
+    value: ${{ steps.start.outputs.session-id }}
+
+runs:
+  using: composite
+  steps:
+    # Cloned outside the workspace (actions/checkout can only write inside it), so the
+    # caller's checkout stays clean for agents, git and tests that scan the repository.
+    - name: Fetch IronRDP
+      shell: pwsh
+      env:
+        IRONRDP_REF: ${{ inputs.ironrdp-ref }}
+        IRONRDP_ROOT: ${{ runner.temp }}/ironrdp
+      run: |
+        git init --quiet $env:IRONRDP_ROOT
+        if ($LASTEXITCODE -ne 0) { throw "git init failed with exit code $LASTEXITCODE" }
+        git -C $env:IRONRDP_ROOT fetch --quiet --depth 1 https://github.com/Devolutions/IronRDP $env:IRONRDP_REF
+        if ($LASTEXITCODE -ne 0) { throw "Could not fetch IronRDP $env:IRONRDP_REF" }
+        git -C $env:IRONRDP_ROOT checkout --quiet --detach FETCH_HEAD
+        if ($LASTEXITCODE -ne 0) { throw "git checkout failed with exit code $LASTEXITCODE" }
+
+    # The agent only changes with ironrdp-ref, so a cache hit skips the Rust build entirely.
+    - name: Restore ironrdp-agent
+      id: agent-cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/ironrdp/target/release/ironrdp-agent.exe
+        key: ironrdp-agent-${{ runner.os }}-${{ inputs.ironrdp-ref }}
+
+    - name: Rust cache
+      if: steps.agent-cache.outputs.cache-hit != 'true'
+      uses: Swatinem/rust-cache@v2.9.1
+      with:
+        workspaces: ${{ runner.temp }}/ironrdp
+
+    - name: Build ironrdp-agent
+      if: steps.agent-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      working-directory: ${{ runner.temp }}/ironrdp
+      env:
+        CARGO_INCREMENTAL: 0
+        CARGO_NET_RETRY: 10
+        RUSTUP_MAX_RETRIES: 10
+        RUST_BACKTRACE: short
+        CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+      run: |
+        cargo build -p ironrdp-agent --release
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+
+    # Saved right after the build rather than at job end, so a later failure in the job still
+    # leaves the agent cached for the next run.
+    - name: Save ironrdp-agent
+      if: steps.agent-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/ironrdp/target/release/ironrdp-agent.exe
+        key: ${{ steps.agent-cache.outputs.cache-primary-key }}
+
+    - name: Start desktop session
+      id: start
+      shell: pwsh
+      env:
+        IRONRDP_ROOT: ${{ runner.temp }}/ironrdp
+        DESKTOP_SIZE: ${{ inputs.desktop-size }}
+        ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+      run: |
+        $artifactsDir = $env:ARTIFACTS_DIR
+        if ([string]::IsNullOrWhiteSpace($artifactsDir)) {
+          $artifactsDir = Join-Path $env:RUNNER_TEMP 'desktop-session'
+        }
+
+        & "$env:GITHUB_ACTION_PATH\Start-DesktopSession.ps1" `
+          -IronRdpRoot $env:IRONRDP_ROOT `
+          -DesktopSize $env:DESKTOP_SIZE `
+          -ArtifactsDir $artifactsDir

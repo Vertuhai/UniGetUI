@@ -85,7 +85,8 @@ internal static partial class AvaloniaAutoUpdater
         InfoBarSeverity Severity,
         bool IsClosable,
         string? ActionButtonText = null,
-        Action? ActionButtonAction = null);
+        Action? ActionButtonAction = null,
+        bool IsOpen = true);
 
     private static void RaiseStatus(
         string title,
@@ -96,6 +97,12 @@ internal static partial class AvaloniaAutoUpdater
         Action? actionButtonAction = null)
     {
         var info = new UpdateStatusInfo(title, message, severity, isClosable, actionButtonText, actionButtonAction);
+        Dispatcher.UIThread.Post(() => StatusChanged?.Invoke(info));
+    }
+
+    private static void DismissUpdateBanner()
+    {
+        var info = new UpdateStatusInfo("", "", InfoBarSeverity.Informational, IsClosable: true, IsOpen: false);
         Dispatcher.UIThread.Post(() => StatusChanged?.Invoke(info));
     }
 
@@ -194,6 +201,7 @@ internal static partial class AvaloniaAutoUpdater
     {
         try
         {
+            if (IsDefaultDevVersion(CoreData.VersionName)) return;
             if (!File.Exists(_updateLogPath)) return;
 
             var info = new FileInfo(_updateLogPath);
@@ -361,6 +369,14 @@ internal static partial class AvaloniaAutoUpdater
             return;
         }
 
+        if (IsDefaultDevVersion(CoreData.VersionName))
+        {
+            LogUpdateInfo(
+                $"Auto-updater: default dev version ({CoreData.VersionName}) detected, skipping update check."
+            );
+            return;
+        }
+
         await CoreTools.WaitForInternetConnection();
 
         bool isFirstLaunch = true;
@@ -379,16 +395,91 @@ internal static partial class AvaloniaAutoUpdater
         }
     }
 
-    // ------------------------------------------------------------------ core logic
-    internal static async Task<bool> CheckAndInstallUpdatesAsync(bool autoLaunch = false, bool manualCheck = false)
+    private static int _activeAttempts;
+    private static int _attemptsAwaitingConsent;
+    private static readonly AutoUpdaterHelpers.UpdaterAttemptCoordinator AttemptCoordinator = new();
+    private static readonly InstallerHandoffTracker InstallerHandoffs = new();
+    private static readonly TimeSpan InstallerHandoffTimeout = TimeSpan.FromMinutes(2);
+
+    internal static bool IsBusy
+        => Volatile.Read(ref _activeAttempts) > Volatile.Read(ref _attemptsAwaitingConsent);
+
+    internal static async Task WaitForInstallerHandoffAsync()
     {
-        ResetUpdateLog(manualCheck, autoLaunch);
+        if (!InstallerHandoffs.HasPending)
+            return;
+
+        LogUpdateInfo("Auto-updater: waiting for the ready update to be handed off before shutting down.");
+        if (!await InstallerHandoffs.WaitForAllAsync(InstallerHandoffTimeout))
+            LogUpdateWarn($"Auto-updater: the ready update was not handed off within {InstallerHandoffTimeout.TotalMinutes:0} minutes, shutting down anyway.");
+    }
+
+    // ------------------------------------------------------------------ core logic
+    internal static void CancelObsoletePendingUpdateForChannelChange()
+    {
+        AttemptCoordinator.CancelIfChannelMismatch(Settings.Get(Settings.K.EnableUniGetUIBeta));
+    }
+
+    internal static Task<bool> CheckAndInstallUpdatesAsync(bool autoLaunch = false, bool manualCheck = false)
+    {
+        bool useBeta = Settings.Get(Settings.K.EnableUniGetUIBeta);
+        return AttemptCoordinator.RunOrJoinAsync(
+            manualCheck,
+            useBeta,
+            attempt => RunSingleAttemptAsync(attempt, autoLaunch, manualCheck),
+            onJoinedActiveAttempt: () =>
+                LogUpdateInfo("Auto-updater: an update attempt is already in progress; reusing active attempt."),
+            onManualJoinWhileAwaitingConsent: versionName =>
+                Dispatcher.UIThread.Post(() => UpdateAvailable?.Invoke(versionName)),
+            onManualJoinWhileBusy: () =>
+                RaiseStatus(
+                    CoreTools.Translate("We are checking for updates."),
+                    CoreTools.Translate("Please wait"),
+                    InfoBarSeverity.Informational,
+                    isClosable: false)
+        );
+    }
+
+    private static async Task<bool> RunSingleAttemptAsync(
+        AutoUpdaterHelpers.UpdaterAttemptCoordinator.AttemptScope attempt,
+        bool autoLaunch,
+        bool manualCheck)
+    {
+        Interlocked.Increment(ref _activeAttempts);
+        try
+        {
+            return await CheckAndInstallUpdatesCoreAsync(attempt, autoLaunch, manualCheck);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeAttempts);
+        }
+    }
+
+    private static async Task<bool> CheckAndInstallUpdatesCoreAsync(
+        AutoUpdaterHelpers.UpdaterAttemptCoordinator.AttemptScope attempt,
+        bool autoLaunch,
+        bool manualCheck)
+    {
+        bool IsManual() => manualCheck || attempt.IsManualCheck;
+        bool IsChannelObsolete() =>
+            attempt.IsSuperseded || Settings.Get(Settings.K.EnableUniGetUIBeta) != attempt.UseBeta;
+
+        if (IsDefaultDevVersion(CoreData.VersionName))
+        {
+            LogUpdateInfo(
+                $"Auto-updater: default dev version ({CoreData.VersionName}) detected, skipping update check."
+            );
+            return true;
+        }
+
+        ResetUpdateLog(IsManual(), autoLaunch);
         UpdaterOverrides overrides = LoadUpdaterOverrides();
         bool wasCheckingForUpdates = true;
 
         try
         {
-            if (manualCheck)
+            if (IsManual())
             {
                 RaiseStatus(
                     CoreTools.Translate("We are checking for updates."),
@@ -397,14 +488,22 @@ internal static partial class AvaloniaAutoUpdater
                     isClosable: false);
             }
 
-            UpdateCandidate candidate = await GetUpdateCandidateAsync(overrides);
+            UpdateCandidate candidate = await GetUpdateCandidateAsync(overrides, attempt.UseBeta);
+            if (IsChannelObsolete())
+            {
+                LogUpdateInfo("Auto-updater: update channel changed while checking for updates \u2014 aborting obsolete attempt.");
+                DismissUpdateBanner();
+                MarkAttemptFinished("aborted - update channel changed");
+                return true;
+            }
+
             LogUpdateInfo(
                 $"Auto-updater source '{candidate.SourceName}' returned version {candidate.VersionName} (upgradable={candidate.IsUpgradable})"
             );
 
             if (!candidate.IsUpgradable)
             {
-                if (manualCheck)
+                if (IsManual())
                 {
                     RaiseStatus(
                         CoreTools.Translate("Great! You are on the latest version."),
@@ -446,7 +545,7 @@ internal static partial class AvaloniaAutoUpdater
                     message => LogUpdateWarn(message)
                 );
                 LogUpdateInfo("Cached valid installer found, preparing to launch...");
-                return await PrepareAndLaunchAsync(installerPath, candidate.VersionName, autoLaunch, manualCheck);
+                return await PrepareAndLaunchAsync(attempt, installerPath, candidate.VersionName, autoLaunch, IsManual());
             }
 
             string installerValidationFailureMarkerPath =
@@ -461,7 +560,7 @@ internal static partial class AvaloniaAutoUpdater
             }
 
             if (
-                !manualCheck
+                !IsManual()
                 && UpdaterDownloadEngine.IsFailureBackoffActive(
                     installerDownloadFailureStatePath,
                     installerIdentity,
@@ -526,7 +625,7 @@ internal static partial class AvaloniaAutoUpdater
                     message => LogUpdateWarn(message)
                 );
                 LogUpdateInfo("Downloaded installer is valid, preparing to launch...");
-                return await PrepareAndLaunchAsync(installerPath, candidate.VersionName, autoLaunch, manualCheck);
+                return await PrepareAndLaunchAsync(attempt, installerPath, candidate.VersionName, autoLaunch, IsManual());
             }
 
             UpdaterDownloadEngine.RecordFailure(
@@ -550,7 +649,7 @@ internal static partial class AvaloniaAutoUpdater
                 actionButtonText: CoreTools.Translate("View log"),
                 actionButtonAction: OpenUpdateLog);
             MarkAttemptFinished("authenticity verification failed");
-            return !manualCheck;
+            return !IsManual();
         }
         catch (PlatformArtifactMissingException ex)
         {
@@ -558,7 +657,7 @@ internal static partial class AvaloniaAutoUpdater
             // published for the current OS/arch yet. Surface this as a friendly
             // "manual update required" notice rather than a generic error.
             LogUpdateWarn(ex.Message);
-            if (manualCheck)
+            if (IsManual())
             {
                 RaiseStatus(
                     CoreTools.Translate("Auto-update is not yet available on this platform."),
@@ -573,7 +672,7 @@ internal static partial class AvaloniaAutoUpdater
         {
             LogUpdateError("An error occurred while checking for updates:");
             LogUpdateError(ex);
-            if (manualCheck || !wasCheckingForUpdates)
+            if (IsManual() || !wasCheckingForUpdates)
             {
                 RaiseStatus(
                     CoreTools.Translate("An error occurred when checking for updates: "),
@@ -617,11 +716,23 @@ internal static partial class AvaloniaAutoUpdater
     }
 
     private static async Task<bool> PrepareAndLaunchAsync(
+        AutoUpdaterHelpers.UpdaterAttemptCoordinator.AttemptScope attempt,
         string installerPath,
         string versionName,
         bool autoLaunch,
         bool manualCheck)
     {
+        bool IsChannelObsolete() =>
+            attempt.IsSuperseded || Settings.Get(Settings.K.EnableUniGetUIBeta) != attempt.UseBeta;
+
+        if (IsChannelObsolete())
+        {
+            LogUpdateInfo("Auto-updater: update channel changed before prompting user \u2014 aborting obsolete update.");
+            DismissUpdateBanner();
+            MarkAttemptFinished("aborted - update channel changed");
+            return true;
+        }
+
         _pendingInstallerPath = installerPath;
         _installRequested = false;
         ReleaseLockForAutoupdate_Notification = false;
@@ -638,24 +749,67 @@ internal static partial class AvaloniaAutoUpdater
             // On first launch in background we wait for user interaction
         }
 
-        // Wait until user requests install, clicks the toast, or the window is being closed
-        while (!_installRequested && !ReleaseLockForAutoupdate_Window && !ReleaseLockForAutoupdate_Notification)
+        TaskCompletionSource handoff = InstallerHandoffs.Begin();
+        try
         {
-            if (!manualCheck && Settings.Get(Settings.K.DisableAutoUpdateWingetUI))
+            // Wait until user requests install, clicks the toast, or the window is being closed
+            attempt.MarkAwaitingConsent(versionName);
+            Interlocked.Increment(ref _attemptsAwaitingConsent);
+            try
             {
-                LogUpdateWarn("Auto-updater: disabled while waiting for user \u2014 aborting.");
-                MarkAttemptFinished("aborted - auto-update disabled while waiting");
-                return true;
-            }
-            await Task.Delay(500);
-        }
+                while (!_installRequested && !ReleaseLockForAutoupdate_Window && !ReleaseLockForAutoupdate_Notification)
+                {
+                    if (IsChannelObsolete())
+                    {
+                        LogUpdateInfo("Auto-updater: update channel changed while waiting for user \u2014 aborting.");
+                        DismissUpdateBanner();
+                        MarkAttemptFinished("aborted - update channel changed while waiting");
+                        return true;
+                    }
 
-        LogUpdateInfo("Installing update \u2014 launching installer.");
-        await LaunchInstallerAsync(installerPath);
-        return true;
+                    if (!manualCheck && !attempt.IsManualCheck && Settings.Get(Settings.K.DisableAutoUpdateWingetUI))
+                    {
+                        LogUpdateWarn("Auto-updater: disabled while waiting for user \u2014 aborting.");
+                        DismissUpdateBanner();
+                        MarkAttemptFinished("aborted - auto-update disabled while waiting");
+                        return true;
+                    }
+
+                    try
+                    {
+                        await Task.Delay(500, attempt.ConsentCancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Channel changed and superseded this pending-consent attempt.
+                    }
+                }
+
+                if (IsChannelObsolete())
+                {
+                    LogUpdateInfo("Auto-updater: update channel changed while waiting for user \u2014 aborting.");
+                    DismissUpdateBanner();
+                    MarkAttemptFinished("aborted - update channel changed while waiting");
+                    return true;
+                }
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _attemptsAwaitingConsent);
+                attempt.ClearAwaitingConsent();
+            }
+
+            LogUpdateInfo("Installing update \u2014 launching installer.");
+            await LaunchInstallerAsync(installerPath, handoff);
+            return true;
+        }
+        finally
+        {
+            InstallerHandoffs.Complete(handoff);
+        }
     }
 
-    private static async Task LaunchInstallerAsync(string installerLocation)
+    private static async Task LaunchInstallerAsync(string installerLocation, TaskCompletionSource handoff)
     {
         if (OperatingSystem.IsMacOS())
         {
@@ -732,6 +886,7 @@ internal static partial class AvaloniaAutoUpdater
         }
 
         LogUpdateInfo($"Installer process started (PID {p.Id}). The installer is expected to terminate UniGetUI before file replacement.");
+        InstallerHandoffs.Complete(handoff);
 
         RaiseStatus(
             CoreTools.Translate("UniGetUI is being updated..."),
@@ -1203,12 +1358,12 @@ internal static partial class AvaloniaAutoUpdater
     }
 
     // ------------------------------------------------------------------ update check sources
-    private static async Task<UpdateCandidate> GetUpdateCandidateAsync(UpdaterOverrides overrides)
+    private static async Task<UpdateCandidate> GetUpdateCandidateAsync(UpdaterOverrides overrides, bool useBeta)
     {
-        return await CheckFromProductInfoAsync(overrides);
+        return await CheckFromProductInfoAsync(overrides, useBeta);
     }
 
-    private static async Task<UpdateCandidate> CheckFromProductInfoAsync(UpdaterOverrides overrides)
+    private static async Task<UpdateCandidate> CheckFromProductInfoAsync(UpdaterOverrides overrides, bool useBeta)
     {
         LogUpdateDebug($"Checking updates via ProductInfo: {overrides.ProductInfoUrl}");
 
@@ -1246,8 +1401,7 @@ internal static partial class AvaloniaAutoUpdater
             );
         }
 
-        bool useBeta = Settings.Get(Settings.K.EnableUniGetUIBeta);
-        ProductInfoChannel? channel = useBeta ? product.Beta : product.Current;
+        ProductInfoChannel? channel = SelectChannel(product, useBeta);
         if (channel is null)
         {
             throw new KeyNotFoundException(
@@ -1261,15 +1415,21 @@ internal static partial class AvaloniaAutoUpdater
             throw new InvalidOperationException($"Installer URL is not allowed: {installer.Url}");
         }
 
-        Version current = ParseVersionOrFallback(
+        Version currentFallback = new(0, 0, 0, CoreData.BuildNumber);
+        SemanticVersion current = AutoUpdaterHelpers.ParseUpdaterVersionOrFallback(
             CoreData.VersionName,
-            new Version(0, 0, 0, CoreData.BuildNumber)
+            currentFallback,
+            message => LogUpdateWarn(message)
         );
-        Version available = ParseVersionOrFallback(channel.Version, new Version(0, 0, 0, 0));
+        SemanticVersion available = AutoUpdaterHelpers.ParseUpdaterVersionOrFallback(
+            channel.Version,
+            new Version(0, 0, 0, 0),
+            message => LogUpdateWarn(message)
+        );
         bool upgradable = available > current;
 
         LogUpdateDebug(
-            $"ProductInfo check: current={current}, available={available}, upgradable={upgradable}"
+            $"ProductInfo check: current={current} (raw='{CoreData.VersionName}'), available={available} (raw='{channel.Version}'), beta={useBeta}, upgradable={upgradable}"
         );
 
         return new UpdateCandidate(upgradable, channel.Version, installer.Hash, installer.Url, "ProductInfo");
@@ -1573,32 +1733,35 @@ internal static partial class AvaloniaAutoUpdater
         && f.Arch.Equals(arch, StringComparison.OrdinalIgnoreCase)
         && f.Url.Contains(osToken, StringComparison.OrdinalIgnoreCase);
 
-    private static Version ParseVersionOrFallback(string raw, Version fallback)
+    private static ProductInfoChannel? SelectChannel(ProductInfoProduct product, bool useBeta)
     {
-        string sanitized = raw.Trim().TrimStart('v', 'V');
-        if (Version.TryParse(sanitized, out Version? parsed))
+        if (!useBeta)
         {
-            return CoreTools.NormalizeVersionForComparison(parsed);
+            return product.Current;
         }
 
-        LogUpdateWarn($"Could not parse version '{raw}', using fallback '{fallback}'");
-        return fallback;
-    }
-
-    // Normalize trailing zero components so "2026.1.11" and "2026.1.11.0" compare equal.
-    private static bool VersionsMatch(string a, string b)
-    {
-        string sa = a.Trim().TrimStart('v', 'V');
-        string sb = b.Trim().TrimStart('v', 'V');
-
-        if (Version.TryParse(sa, out Version? va) && Version.TryParse(sb, out Version? vb))
+        if (product.Beta is null)
         {
-            return CoreTools.NormalizeVersionForComparison(va)
-                .Equals(CoreTools.NormalizeVersionForComparison(vb));
+            return product.Current;
         }
 
-        return string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase);
+        if (product.Current is null)
+        {
+            return product.Beta;
+        }
+
+        return AutoUpdaterHelpers.IsUpdateAvailable(product.Current.Version, product.Beta.Version)
+            ? product.Beta
+            : product.Current;
     }
+
+    internal static bool IsDefaultDevVersion(string? rawVersion) =>
+        AutoUpdaterHelpers.IsDefaultDevVersion(rawVersion);
+
+    // Normalize trailing zero components and prerelease labels so "2026.1.11" / "2026.1.11.0"
+    // and "2026.3.2-beta1" / "2026.3.2.0-beta1" compare equal.
+    internal static bool VersionsMatch(string a, string b) =>
+        AutoUpdaterHelpers.VersionsMatch(a, b);
 
     private static string NormalizeThumbprint(string thumbprint) =>
         new(thumbprint.ToLowerInvariant().Where(char.IsAsciiHexDigit).ToArray());

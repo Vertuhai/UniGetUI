@@ -99,8 +99,15 @@ public partial class MainWindowViewModel : ViewModelBase
             int total = _operationBatch.Count;
             if (total == 0)
                 return CoreTools.Translate("Operations");
+            // Name the failures, so a collapsed panel does not read as "all good" when some failed.
+            int failed = _operationBatch.Count(o => o.Status is OperationStatus.Failed);
+            if (failed > 0)
+            {
+                int succeeded = _operationBatch.Count(o => o.Status is OperationStatus.Succeeded);
+                return CoreTools.Translate("{0} of {1} succeeded, {2} failed", succeeded, total, failed);
+            }
             int completed = _operationBatch.Count(o =>
-                o.Status is OperationStatus.Succeeded or OperationStatus.Failed or OperationStatus.Canceled);
+                o.Status is OperationStatus.Succeeded or OperationStatus.Canceled);
             return CoreTools.Translate("{0} of {1} operations completed", completed, total);
         }
     }
@@ -493,6 +500,13 @@ public partial class MainWindowViewModel : ViewModelBase
 
         AvaloniaAutoUpdater.StatusChanged += status => Dispatcher.UIThread.Post(() =>
         {
+            if (!status.IsOpen)
+            {
+                UpdatesBanner.ActionButtonCommand = null;
+                UpdatesBanner.IsOpen = false;
+                return;
+            }
+
             UpdatesBanner.Severity = status.Severity;
             UpdatesBanner.Title = status.Title;
             UpdatesBanner.Message = status.Message;
@@ -696,22 +710,18 @@ public partial class MainWindowViewModel : ViewModelBase
     /// The navigation pages in sidebar order: Ctrl/Cmd+1, +2, … follow it (the More menu takes the
     /// next number), and so does the previous/next page cycle.
     /// </summary>
-    internal static PageType[] GetShortcutPages(bool catalogEnabled) => catalogEnabled
-        ? [PageType.Catalog, PageType.Discover, PageType.Updates, PageType.Installed, PageType.Bundles,
-            PageType.CatalogEditor, PageType.Settings, PageType.Managers]
-        : [PageType.Discover, PageType.Updates, PageType.Installed, PageType.Bundles,
-            PageType.Settings, PageType.Managers];
+    internal static PageType[] GetShortcutPages(IEnumerable<PageType> navigationPages)
+        => [.. navigationPages, PageType.Settings, PageType.Managers];
 
-    public PageType[] ShortcutPages => GetShortcutPages(Sidebar.SoftwareCatalogEnabled);
+    public PageType[] ShortcutPages => GetShortcutPages(Sidebar.NavigationPages);
 
-    internal static PageType GetNextPage(PageType type, bool catalogEnabled) => Step(type, catalogEnabled, +1);
+    internal static PageType GetNextPage(PageType type, PageType[] pages) => Step(type, pages, +1);
 
-    internal static PageType GetPreviousPage(PageType type, bool catalogEnabled) => Step(type, catalogEnabled, -1);
+    internal static PageType GetPreviousPage(PageType type, PageType[] pages) => Step(type, pages, -1);
 
     // Pages outside the sidebar order (logs, help, …) step to Discover.
-    private static PageType Step(PageType type, bool catalogEnabled, int direction)
+    private static PageType Step(PageType type, PageType[] pages, int direction)
     {
-        var pages = GetShortcutPages(catalogEnabled);
         int index = Array.IndexOf(pages, type);
         return index < 0 ? PageType.Discover : pages[(index + direction + pages.Length) % pages.Length];
     }
@@ -926,6 +936,16 @@ public partial class MainWindowViewModel : ViewModelBase
         await load();
         return true;
     }
+
+    public bool HasUnsavedWork => !CanShutdownWithoutAsking || BundlesPage.HasChangesToLose;
+
+    /// <summary>
+    /// Whether <see cref="CanShutdownAsync"/> would allow the shutdown without a prompt, for callers
+    /// that need the answer straight away.
+    /// </summary>
+    public bool CanShutdownWithoutAsking
+        => CurrentPageContent is not IAsyncLeaveGuard { HasUnsavedWork: true }
+            && CatalogEditor is not ({ IsBusy: true } or { IsDirty: true });
 
     public async Task<bool> CanShutdownAsync(CancellationToken cancellationToken = default)
     {

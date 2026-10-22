@@ -104,9 +104,9 @@ public partial class PackageDetailsWindow : UniGetUI.Avalonia.Views.DialogPages.
             UpdatePips();
         }, DispatcherPriority.Loaded);
 
-        MainActionButton.Click += (_, _) => OnMainAction();
+        MainActionButton.Click += (_, _) => _ = OnMainActionAsync();
         ActionVariantsButton.Flyout = BuildActionFlyout();
-        InstallOptionsSaveButton.Click += (_, _) => _ = SaveInstallOptionsAsync();
+        InstallOptionsSaveButton.Click += (_, _) => _ = SaveInstallOptionsAndRefreshAsync();
         ContributeButton.Click += (_, _) => OpenUrl(ContributeUrl);
         PrevScreenshotButton.Click += (_, _) => NavigateScreenshot(-1);
         NextScreenshotButton.Click += (_, _) => NavigateScreenshot(1);
@@ -155,6 +155,12 @@ public partial class PackageDetailsWindow : UniGetUI.Avalonia.Views.DialogPages.
         };
         var embed = new InstallOptionsControl { DataContext = _installVm };
         InstallOptionsHolder.Content = embed;
+    }
+
+    private async Task SaveInstallOptionsAndRefreshAsync()
+    {
+        await SaveInstallOptionsAsync();
+        await _vm.RefreshDetailsAsync();
     }
 
     private async Task SaveInstallOptionsAsync()
@@ -1087,11 +1093,19 @@ public partial class PackageDetailsWindow : UniGetUI.Avalonia.Views.DialogPages.
         return flyout;
     }
 
-    private void OnMainAction()
+    private async Task OnMainActionAsync()
     {
+        if (!await ConfirmUninstallAsync(_vm.OperationRole)) return;
         ShouldProceedWithOperation = true;
         Close();
     }
+
+    // Uninstalling cannot be undone: confirm on top of this dialog (the main window stacks them), which
+    // stays open on Cancel. Covers every caller (Installed page, catalog) and the as-admin / interactive /
+    // remove-data variants.
+    private async Task<bool> ConfirmUninstallAsync(OperationType role)
+        => role is not OperationType.Uninstall
+           || (MainWindow.Instance is { } window && await UninstallConfirmationDialog.ConfirmAsync(window, _vm.Package));
 
     private async Task LaunchAndClose(
         OperationType role,
@@ -1100,6 +1114,7 @@ public partial class PackageDetailsWindow : UniGetUI.Avalonia.Views.DialogPages.
         bool? no_integrity = null,
         bool? remove_data = null)
     {
+        if (!await ConfirmUninstallAsync(role)) return;
         Close();
 
         var pkg = _vm.Package;

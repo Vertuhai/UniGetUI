@@ -302,7 +302,7 @@
   "Local": "Local",
   "OK": "D'acord",
   "Last checked: {0}": "Última comprovació: {0}",
-  "{0} packages were found, {1} of which match the specified filters.": "S'han trobat {1} paquets, {0} dels quals s'ajusten als filtres establerts.",
+  "{0} packages were found, {1} of which match the specified filters.": "S'han trobat {0} paquets, {1} dels quals s'ajusten als filtres establerts.",
   "{0} selected": "{0} seleccionats",
   "(Last checked: {0})": "(Comprovat per darrer cop: {0})",
   "All packages selected": "Tots els paquets seleccionats",
@@ -1091,5 +1091,7 @@
   "Package name": "Nom del paquet",
   "No subfolder": "Cap subcarpeta",
   "Enter a name for the new source": "Escriviu un nom per a la nova font",
-  "Enter a complete source URL, including the protocol (for example https://)": "Escriviu l'URL completa de la font, incloent-hi el protocol (per exemple https://)"
+  "Enter a complete source URL, including the protocol (for example https://)": "Escriviu l'URL completa de la font, incloent-hi el protocol (per exemple https://)",
+  "Scroll tab list backward": "Desplaça la llista de pestanyes enrere",
+  "Scroll tab list forward": "Desplaça la llista de pestanyes endavant"
 }
