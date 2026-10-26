@@ -262,6 +262,22 @@
                               Path="{Binding PageIconPath}"/>
 
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="0">
+                <!-- Link back to the page this one belongs to, e.g. the Catalog Editor's Software Catalog -->
+                <Button Classes="filter-hyperlink"
+                        IsVisible="{Binding HasParentPage}"
+                        Command="{Binding GoToParentPageCommand}"
+                        HorizontalAlignment="Left"
+                        Padding="2,1"
+                        Margin="-3,0,0,0"
+                        ToolTip.Tip="{Binding ParentPageLinkName}"
+                        automation:AutomationProperties.Name="{Binding ParentPageLinkName}">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <controls:SvgIcon Path="avares://UniGetUI/Assets/Symbols/backward.svg"
+                                          Width="12" Height="12" VerticalAlignment="Center"
+                                          automation:AutomationProperties.AccessibilityView="Raw"/>
+                        <TextBlock Text="{Binding ParentPageTitle}" FontSize="12" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
                 <TextBlock x:Name="MainTitle"
                            MaxHeight="60"
                            HorizontalAlignment="Left"
@@ -1230,8 +1246,8 @@
                             <StackPanel Orientation="Horizontal"/>
                         </ItemsPanelTemplate>
                     </ListBox.ItemsPanel>
-                    <ListBoxItem x:Name="Selector_List" Classes="segment-item" Padding="8,4,8,8" ToolTip.Tip="List"
-                                 automation:AutomationProperties.Name="List">
+                    <ListBoxItem x:Name="Selector_List" Classes="segment-item" Padding="8,4,8,8" ToolTip.Tip="{t:Translate List}"
+                                 automation:AutomationProperties.Name="{t:Translate List}">
                         <Viewbox Width="18" Height="18" automation:AutomationProperties.AccessibilityView="Raw">
                             <Grid Width="16" Height="16">
                                 <!-- bullets -->
@@ -1248,8 +1264,8 @@
                             </Grid>
                         </Viewbox>
                     </ListBoxItem>
-                    <ListBoxItem x:Name="Selector_Grid" Classes="segment-item" Padding="8,4,8,8" ToolTip.Tip="Grid"
-                                 automation:AutomationProperties.Name="Grid">
+                    <ListBoxItem x:Name="Selector_Grid" Classes="segment-item" Padding="8,4,8,8" ToolTip.Tip="{t:Translate Grid}"
+                                 automation:AutomationProperties.Name="{t:Translate Grid}">
                         <!-- Two rows: open "[" bracket on the left + two stacked lines on the right -->
                         <Viewbox Width="18" Height="18" automation:AutomationProperties.AccessibilityView="Raw">
                             <Path Width="16" Height="16"
@@ -1262,8 +1278,8 @@
                                   Fill="Transparent"/>
                         </Viewbox>
                     </ListBoxItem>
-                    <ListBoxItem x:Name="Selector_Icons" Classes="segment-item" Padding="8,4,8,8" ToolTip.Tip="Icons"
-                                 automation:AutomationProperties.Name="Icons">
+                    <ListBoxItem x:Name="Selector_Icons" Classes="segment-item" Padding="8,4,8,8" ToolTip.Tip="{t:Translate Icons}"
+                                 automation:AutomationProperties.Name="{t:Translate Icons}">
                         <!-- 2x2 hollow squares (WinUI IconView) with extra gap between -->
                         <Viewbox Width="18" Height="18" automation:AutomationProperties.AccessibilityView="Raw">
                             <Path Width="16" Height="16"
