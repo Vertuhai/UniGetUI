@@ -13,9 +13,9 @@ macOS. It forwards arguments and terminal input/output, waits for each command t
 returns its exit code. Keep it with the rest of the installation; copying only the launcher
 elsewhere will not work.
 
-- **Windows:** Select **Add to PATH** during a regular installation to run `uniget` from any
-  directory. This option is off by default and uses the user or system `PATH` according to
-  the install mode. Open a new terminal after installation. Without this option, run
+- **Windows:** Keep **Add to PATH** selected during a regular installation to run `uniget` from
+  any directory. This option is on by default (upgrades keep your previous choice) and uses the
+  user or system `PATH` according to the install mode. Open a new terminal after installation. Without this option, run
   `.\uniget.exe` from the installation directory.
 - **Linux:** The `.deb` and `.rpm` packages expose `uniget` on `PATH`; from an extracted tarball,
   run `./uniget` in the directory containing `UniGetUI`.
@@ -33,11 +33,11 @@ The commands below assume PowerShell is in the installation directory on Windows
 .\uniget.exe operation wait --id 123 --timeout 300
 ```
 
-For a silent Windows installation, include `ADDTOPATH=1` to opt in, or `ADDTOPATH=0` to
-explicitly deselect **Add to PATH**:
+For a silent Windows installation, include `ADDTOPATH=0` to opt out, or `ADDTOPATH=1` to
+explicitly select **Add to PATH** (for example, over a previously saved opt-out):
 
 ```powershell
-.\UniGetUI.Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ADDTOPATH=1
+.\UniGetUI.Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART ADDTOPATH=0
 ```
 
 The property name is case-insensitive and accepts only `0` or `1`. It overrides the saved
@@ -168,7 +168,7 @@ other hosts; this does not substitute for their native lock-contention tests.
 | --- | --- | --- | --- |
 | `app status` | None | None | Returns app/session state such as headless mode, page, and supported UI actions. |
 | `app show` | None | None | Shows and focuses the window when a GUI session exists. |
-| `app navigate` | `--page <page>` | `--manager <id>`, `--help-attachment <path>` | Valid pages include `discover`, `updates`, `installed`, `bundles`, `catalog`, `catalog-editor`, `settings`, `managers`, `own-log`, `manager-log`, `operation-history`, `help`, `release-notes`, and `about`. `catalog` and `catalog-editor` require Enable Software Catalog in Experimental settings and developer options, followed by an application restart. |
+| `app navigate` | `--page <page>` | `--manager <id>`, `--help-attachment <path>` | Valid pages include `discover`, `updates`, `installed`, `bundles`, `catalog`, `catalog-editor`, `git-repositories`, `settings`, `managers`, `own-log`, `manager-log`, `operation-history`, `help`, `release-notes`, and `about`. `catalog` and `catalog-editor` require Enable Software Catalog in Experimental settings and developer options, followed by an application restart. `git-repositories` requires the Git Repositories extension to be turned on in Settings, under Extensions; no restart is needed. |
 | `app quit` | None | None | Gracefully shuts down the selected session, including headless daemons. |
 
 ### Operations
@@ -310,8 +310,8 @@ Windows only. A folder rule names the subfolder of the current user's Start Menu
 | `package ignored list` | None | None | Lists ignored-update rules tracked by UniGetUI. |
 | `package ignored add` | `--id <package-id>` | `--manager <id>`, `--version <version>`, `--source <source>` | Adds an ignored-update rule. |
 | `package ignored remove` | `--id <package-id>` | `--manager <id>`, `--version <version>`, `--source <source>` | Removes an ignored-update rule. |
-| `package update-all` | None | None | Queues updates for all currently upgradable packages. |
-| `package update-manager` | `--manager <id>` | None | Queues updates for all upgradable packages handled by one manager. |
+| `package update-all` | None | `--manager <id>`, `--wait true\|false`, `--timeout <seconds>`, `--delay <seconds>` | Queues an update for every available update and returns their operation ids. With `--wait true`, waits for all of them (default timeout 3600 seconds) and exits with `1` if any did not succeed or the wait timed out. Works in headless sessions. |
+| `package update-manager` | `--manager <id>` | `--wait true\|false`, `--timeout <seconds>`, `--delay <seconds>` | Same as `package update-all --manager <id>`. |
 
 ## Headless behavior
 
@@ -323,7 +323,7 @@ When UniGetUI is started with `--headless`, it exposes the same automation API w
 | `app show` | Fails with “the current UniGetUI session is running headless and has no window to show.” |
 | `app navigate` | Fails with “the current UniGetUI session is running headless and cannot navigate UI pages.” |
 | `package show` | UI-oriented; may fail or be meaningless in pure headless sessions. |
-| `package update-all`, `package update-manager` | Require GUI-side upgrade handlers. Headless sessions may return “cannot update all packages” or “cannot update manager packages.” |
+| `package update-all`, `package update-manager` | Fully supported. The headless session queues the updates itself. |
 
 ## Headless IPC options
 
@@ -356,6 +356,8 @@ These parameters are accepted by the app executables in addition to the automati
 | `--enable-secure-setting-for-user <user> <key>` / `--disable-secure-setting-for-user <user> <key>` | Toggles one secure setting for a specified user. | May require elevation. |
 | `--delete-shortcuts <path> [<path>...]` | Deletes desktop or Start Menu shortcuts, then quits. | Used by UniGetUI to remove shortcuts the current user is not allowed to delete; refuses any path that is not a `.lnk` or `.url` under a desktop or Start Menu folder. |
 | `<bundle-file>` | Loads a valid bundle file into the Package Bundles page. | Supported extensions include `.ubundle`, `.json`, `.yaml`, and `.xml`. |
+| `pkg-helper install-daemon` / `remove-daemon` | Installs (or removes) the root service that lets standard users install catalog packages without an administrator password. | macOS, as root. `pkg-helper serve` is what the service runs. See [PKG_FEEDS.md](PKG_FEEDS.md). |
+| `pkg-index <folder>` | Writes the `index.json` that publishes a folder of packages as a web feed, then quits: `.exe` and `.msi` files on Windows, `.pkg`, `.dmg` and `.zip` files elsewhere. Entries another platform wrote are kept while their files are unchanged. | `.dmg` files are read on macOS only. Exits 3 when a file in the folder could not be read. See [PKG_FEEDS.md](PKG_FEEDS.md) and [WINDOWS_INSTALLER_FEEDS.md](WINDOWS_INSTALLER_FEEDS.md). |
 
 ## Other environment variables
 
@@ -372,7 +374,35 @@ These are read by the application itself rather than by the CLI client.
 
 ## Deep links
 
-The Windows installer registers a `unigetui://` protocol handler for regular installations; a portable install does not register it, see [PORTABLE.md](PORTABLE.md). It is used to route notification clicks back into a running instance, and accepts these actions:
+The Windows installer registers a `unigetui://` protocol handler for regular installations; a portable install does not register it, see [PORTABLE.md](PORTABLE.md).
+
+### Package links
+
+A package link opens a package's details in UniGetUI, from where the user can install it:
+
+```
+unigetui://package?manager=winget&source=winget&id=TechSmith.Snagit.2025&name=Snagit%202025
+```
+
+Right-click a package on the Discover Packages or Installed Packages page and choose **Copy link** to put a link to it on the clipboard.
+
+| Parameter | Required | Meaning |
+| --- | --- | --- |
+| `id` | Yes | The package identifier. It must match exactly, ignoring case. |
+| `manager` | No | The package manager's identifier, as `unigetui manager list` prints it (`winget`, `chocolatey`, `scoop`, `npm`, ...). Without it, every enabled package manager is searched. |
+| `source` | No | The source name, for package managers with several sources (`winget`, `msstore`, `community`, ...). Without it, any source matches. |
+| `version` | No | The version to install instead of the latest one. |
+| `name` | No | The package's name. It is only shown while UniGetUI looks for the package and if the package is not found; it is never used to find the package. |
+
+Values are percent-encoded. Unknown parameters are ignored. A link is refused if it has no `id`, repeats a parameter, contains a control character, has a value longer than 256 characters, or is longer than 2048 characters.
+
+A link only names a package. Opening one never installs anything by itself: it shows the package details, and the package is installed only if the user clicks Install. The installation uses the user's own install options for that package, and no installer address, argument or other install option can be passed in a link. A package that is only known to this computer, such as a WinGet "Local PC" entry, cannot be linked to.
+
+The link works whether or not UniGetUI is already running. If the package manager is disabled or not available, or the package is not found, UniGetUI says so and opens nothing.
+
+### Notification actions
+
+These links route notification clicks back into a running instance:
 
 | Deep link | Meaning |
 | --- | --- |
@@ -381,7 +411,7 @@ The Windows installer registers a `unigetui://` protocol handler for regular ins
 | `unigetui://updateAll` | Starts an update for every available package update. |
 | `unigetui://releaseSelfUpdateLock` | Allows a pending UniGetUI self-update to proceed. |
 
-Anything else after `unigetui://` is ignored. The action is only dispatched when UniGetUI is already running: a link that cold-starts the app launches it normally and the action is dropped. To drive UniGetUI programmatically, use the verb commands above or the [IPC API](IPC.md) rather than deep links.
+Anything else after `unigetui://` is ignored. A notification action is only dispatched when UniGetUI is already running: a link that cold-starts the app launches it normally and the action is dropped. To drive UniGetUI programmatically, use the verb commands above or the [IPC API](IPC.md) rather than deep links.
 
 ## Installer parameters
 

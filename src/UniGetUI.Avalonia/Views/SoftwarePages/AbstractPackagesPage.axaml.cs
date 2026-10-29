@@ -19,6 +19,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using UniGetUI.Avalonia.Extensions;
 using UniGetUI.Avalonia.Infrastructure;
+using UniGetUI.Avalonia.ViewModels;
 using UniGetUI.Avalonia.ViewModels.Pages;
 using UniGetUI.Avalonia.Views.Controls;
 using UniGetUI.Core.Logging;
@@ -69,6 +70,7 @@ public abstract partial class AbstractPackagesPage : UserControl,
         // "New version" sort option is only relevant on the updates page
         OrderByNewVersion_Menu.IsVisible = ViewModel.RoleIsUpdateLike;
         OrderByDownloadSize_Menu.IsVisible = ViewModel.DownloadSizeColumnVisible;
+        OrderByReleaseDate_Menu.IsVisible = ViewModel.ReleaseDateColumnVisible;
 
         // Stamp initial checkmarks, then keep them in sync with sort-property changes
         UpdateSortMenuChecks();
@@ -107,6 +109,10 @@ public abstract partial class AbstractPackagesPage : UserControl,
         GenerateToolBar(ViewModel);
         configureToolbar?.Invoke(ViewModel);
         InitializeToolbarOverflow();
+        ViewModel.FilteredPackages.SelectionStateChanged += (_, _) => ScheduleSelectionGatesRefresh();
+        PackageList.SelectionChanged += (_, _) => ScheduleSelectionGatesRefresh();
+        // Posted, so subclass predicates only run once their constructor has finished
+        ScheduleSelectionGatesRefresh();
 
         // Double-click a package row → show details. DataGrid-level gestures also receive
         // header double-clicks, so require an actual row ancestor rather than blacklisting headers.
@@ -341,6 +347,33 @@ public abstract partial class AbstractPackagesPage : UserControl,
         Height = 16,
     };
 
+    /// <summary>"Copy link": puts a unigetui://package link to the selected package on the clipboard.</summary>
+    protected MenuItem CreateCopyLinkMenuItem()
+    {
+        var item = new MenuItem { Header = CoreTools.Translate("Copy link"), Icon = LoadMenuIcon("share") };
+        item.Click += (_, _) => _ = CopyPackageLinkAsync(SelectedItem);
+        return item;
+    }
+
+    private static async Task CopyPackageLinkAsync(IPackage? package)
+    {
+        if (package is null || !PackageLink.CanLinkTo(package)
+            || GetMainWindow() is not { } win || win.Clipboard is not { } clipboard) return;
+
+        await clipboard.SetTextAsync(PackageLink.FromPackage(package).ToUri());
+
+        if (win.DataContext is not MainWindowViewModel main) return;
+        var toast = new InfoBarViewModel
+        {
+            Title = CoreTools.Translate("A link to {0} was copied to the clipboard", package.Name),
+            Severity = InfoBarSeverity.Success,
+            IsClosable = true,
+            IsOpen = true,
+        };
+        toast.OnClosed = () => main.DismissToast(toast);
+        main.ShowToast(toast);
+    }
+
     // ─── Protected access to main toolbar controls for subclasses ─────────────
     /// <summary>Sets the icon and text of the primary action button.</summary>
     protected void SetMainButton(string svgName, string label, Action onClick)
@@ -386,6 +419,46 @@ public abstract partial class AbstractPackagesPage : UserControl,
 
             return null;
         }
+    }
+
+    protected bool HasSelectedItem => SelectedItem is not null;
+    protected bool HasCheckedPackages => ViewModel.FilteredPackages.Any(w => w.IsChecked);
+
+    // ─── Selection-dependent toolbar state ────────────────────────────────────
+    private readonly List<(Control Control, Func<bool> CanExecute)> _selectionGates = [];
+    private bool _selectionGatesRefreshPending;
+
+    /// <summary>Keeps the control enabled only while canExecute holds, rechecked whenever
+    /// packages are focused or checked.</summary>
+    protected T EnableWhen<T>(T control, Func<bool> canExecute) where T : Control
+    {
+        _selectionGates.Add((control, canExecute));
+        return control;
+    }
+
+    /// <summary>Gates the main button and its dropdown on at least one checked package.</summary>
+    protected void EnableMainButtonWhenPackagesChecked()
+    {
+        EnableWhen(MainToolbarButton, () => HasCheckedPackages);
+        EnableWhen(MainToolbarButtonDropdown, () => HasCheckedPackages);
+    }
+
+    protected void RefreshSelectionGates()
+    {
+        foreach (var (control, canExecute) in _selectionGates)
+            control.IsEnabled = canExecute();
+    }
+
+    // Select all checks every row one by one; coalesce those into a single refresh
+    private void ScheduleSelectionGatesRefresh()
+    {
+        if (_selectionGatesRefreshPending) return;
+        _selectionGatesRefreshPending = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _selectionGatesRefreshPending = false;
+            RefreshSelectionGates();
+        });
     }
 
     // ─── Operation launchers (delegated to ViewModel) ─────────────────────────
@@ -448,6 +521,7 @@ public abstract partial class AbstractPackagesPage : UserControl,
         OrderByNewVersion_Menu.Icon = Check(ViewModel.SortFieldIndex == 3);
         OrderBySource_Menu.Icon = Check(ViewModel.SortFieldIndex == 4);
         OrderByDownloadSize_Menu.Icon = Check(ViewModel.SortFieldIndex == 5);
+        OrderByReleaseDate_Menu.Icon = Check(ViewModel.SortFieldIndex == 6);
         OrderByAscending_Menu.Icon = Check(ViewModel.SortAscending);
         OrderByDescending_Menu.Icon = Check(!ViewModel.SortAscending);
     }

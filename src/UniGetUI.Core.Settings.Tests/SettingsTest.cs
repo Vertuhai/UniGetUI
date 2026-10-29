@@ -93,6 +93,41 @@ namespace UniGetUI.Core.SettingsEngine.Tests
         }
 
         [Theory]
+        [InlineData(false, false, true)]
+        [InlineData(false, true, false)]
+        [InlineData(true, false, false)]
+        [InlineData(true, true, false)]
+        public void TrayIconShowsOnlyWhileRunningInTheBackgroundAndNotHidden(
+            bool disableSystemTray,
+            bool hideSystemTrayIcon,
+            bool expectedVisible)
+        {
+            Settings.Set(Settings.K.DisableSystemTray, disableSystemTray);
+            Settings.Set(Settings.K.HideSystemTrayIcon, hideSystemTrayIcon);
+
+            Assert.Equal(expectedVisible, Settings.IsSystemTrayIconVisible());
+
+            Settings.Set(Settings.K.DisableSystemTray, false);
+            Settings.Set(Settings.K.HideSystemTrayIcon, false);
+        }
+
+        [Fact]
+        public void HidingTheTrayIconKeepsNotificationsEnabled()
+        {
+            Settings.Set(Settings.K.DisableNotifications, false);
+            Settings.Set(Settings.K.DisableSystemTray, false);
+
+            Settings.Set(Settings.K.HideSystemTrayIcon, true);
+            Assert.False(Settings.AreNotificationsDisabled());
+
+            Settings.Set(Settings.K.DisableSystemTray, true);
+            Assert.True(Settings.AreNotificationsDisabled());
+
+            Settings.Set(Settings.K.DisableSystemTray, false);
+            Settings.Set(Settings.K.HideSystemTrayIcon, false);
+        }
+
+        [Theory]
         [InlineData(Settings.K.Test1, true, false, false, true)]
         [InlineData(Settings.K.Test2, true, false, false, false)]
         [InlineData(Settings.K.Test3, true, false, true, true)]

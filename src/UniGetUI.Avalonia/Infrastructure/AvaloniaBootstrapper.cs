@@ -217,12 +217,10 @@ internal static class AvaloniaBootstrapper
             _ipcApi.ShowPackageHandler = request =>
                 Dispatcher.UIThread.InvokeAsync(() => ShowPackage(request)).GetAwaiter().GetResult();
 
-            _ipcApi.OnUpgradeAll += (_, _) =>
-                Dispatcher.UIThread.Post(() => _ = AvaloniaPackageOperationHelper.UpdateAllAsync());
-
-            _ipcApi.OnUpgradeAllForManager += (_, managerName) =>
-                Dispatcher.UIThread.Post(() =>
-                    _ = AvaloniaPackageOperationHelper.UpdateAllForManagerAsync(managerName));
+            _ipcApi.UpdateAllHandler = managerName =>
+                Dispatcher.UIThread.InvokeAsync(() => managerName is null
+                    ? AvaloniaPackageOperationHelper.UpdateAllAsync()
+                    : AvaloniaPackageOperationHelper.UpdateAllForManagerAsync(managerName));
 
             await _ipcApi.Start();
         }
@@ -262,6 +260,7 @@ internal static class AvaloniaBootstrapper
                 {
                     "catalog" => window is { SoftwareCatalogEnabled: true },
                     "catalog-editor" => window is { CatalogEditorEnabled: true },
+                    "git-repositories" => window is { GitRepositoriesEnabled: true },
                     _ => true,
                 })
                 .ToArray(),
@@ -306,6 +305,11 @@ internal static class AvaloniaBootstrapper
                 if (page == "catalog-editor" && !window.CatalogEditorEnabled)
                     throw new InvalidOperationException("Catalog Editor is disabled. Enable it in Experimental settings and developer options, then restart UniGetUI.");
                 window.Navigate(page == "catalog-editor" ? PageType.CatalogEditor : PageType.Catalog);
+                break;
+            case "git-repositories":
+                if (!window.GitRepositoriesEnabled)
+                    throw new InvalidOperationException("Git Repositories is turned off. Turn it on in Settings, under Extensions.");
+                window.Navigate(PageType.GitRepositories);
                 break;
             case "settings":
                 window.Navigate(PageType.Settings);

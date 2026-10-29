@@ -31,6 +31,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
     private MenuItem? _menuUninstallThenReinstall;
     private MenuItem? _menuIgnoreUpdates;
     private MenuItem? _menuDetails;
+    private MenuItem? _menuCopyLink;
     private MenuItem? _menuOpenInstallLocation;
     private MenuItem? _menuDownloadInstaller;
     private MenuItem? _menuManual;
@@ -95,6 +96,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
         SetMainButton("delete", CoreTools.Translate("Uninstall selection"), () =>
             _ = ConfirmAndLaunchUninstall(vm.FilteredPackages.GetCheckedPackages()));
 
+        EnableMainButtonWhenPackagesChecked();
         SetMainButtonDropdown(new MenuFlyout
         {
             Items = { uninstallAsAdmin, uninstallInteractive, new Separator(), downloadInstallers },
@@ -107,16 +109,16 @@ public class InstalledPackagesPage : AbstractPackagesPage
 
         // ── Toolbar buttons ─────────────────────────────────────────────────
         ViewModel.AddToolbarSeparator(subgroup: !ViewModel.DisableReload);
-        ViewModel.AddToolbarButton("options", CoreTools.Translate("Uninstall options"),
-            () => _ = ShowInstallationOptionsForPackage(SelectedItem), showLabel: false);
+        EnableWhen(ViewModel.AddToolbarButton("options", CoreTools.Translate("Uninstall options"),
+            () => _ = ShowInstallationOptionsForPackage(SelectedItem), showLabel: false), () => HasSelectedItem);
         ViewModel.AddToolbarSeparator(subgroup: true);
-        ViewModel.AddToolbarButton("console", CoreTools.Translate("Manual uninstall"),
-            () => _ = ManualInstallHelper.LaunchManualAsync(SelectedItem, OperationType.Uninstall));
+        EnableWhen(ViewModel.AddToolbarButton("console", CoreTools.Translate("Manual uninstall"),
+            () => _ = ManualInstallHelper.LaunchManualAsync(SelectedItem, OperationType.Uninstall)), () => HasSelectedItem);
         ViewModel.AddToolbarSeparator(subgroup: true);
-        ViewModel.AddToolbarButton("info_round", CoreTools.Translate("Package details"),
-            () => _ = ShowDetailsForPackage(SelectedItem), showLabel: false);
+        EnableWhen(ViewModel.AddToolbarButton("info_round", CoreTools.Translate("Package details"),
+            () => _ = ShowDetailsForPackage(SelectedItem), showLabel: false), () => HasSelectedItem);
         ViewModel.AddToolbarSeparator();
-        ViewModel.AddToolbarButton("pin", CoreTools.Translate("Ignore selected packages"), async () =>
+        var ignoreButton = ViewModel.AddToolbarButton("pin", CoreTools.Translate("Ignore selected packages"), async () =>
         {
             var packages = vm.FilteredPackages.GetCheckedPackages().ToList();
             if (MainWindow.Instance is not { } window
@@ -130,11 +132,12 @@ public class InstalledPackagesPage : AbstractPackagesPage
                 }
             }
         });
+        EnableWhen(ignoreButton, () => HasCheckedPackages);
         ViewModel.AddToolbarButton("clipboard_list", CoreTools.Translate("Manage ignored updates"),
             () => vm.RequestManageIgnoredCommand.Execute(null));
         ViewModel.AddToolbarSeparator(subgroup: true);
-        ViewModel.AddToolbarButton("add_to", CoreTools.Translate("Add selection to bundle"),
-            () => _ = ExportSelectionToBundleAsync(vm));
+        EnableWhen(ViewModel.AddToolbarButton("add_to", CoreTools.Translate("Add selection to bundle"),
+            () => _ = ExportSelectionToBundleAsync(vm)), () => HasCheckedPackages);
         ViewModel.AddToolbarButton("save_as", CoreTools.Translate("Export to CSV"),
             () => _ = ExportPackagesToCsvAsync());
     }
@@ -239,6 +242,8 @@ public class InstalledPackagesPage : AbstractPackagesPage
         };
         _menuDetails.Click += (_, _) => _ = ShowDetailsForPackage(SelectedItem);
 
+        _menuCopyLink = CreateCopyLinkMenuItem();
+
         var menu = new ContextMenu();
         menu.Items.Add(menuUninstall);
         menu.Items.Add(new Separator());
@@ -261,6 +266,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
         menu.Items.Add(_menuIgnoreUpdates);
         menu.Items.Add(new Separator());
         menu.Items.Add(_menuDetails);
+        menu.Items.Add(_menuCopyLink);
 
         return menu;
     }
@@ -271,7 +277,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
             || _menuAsAdmin is null || _menuInteractive is null || _menuRemoveData is null
             || _menuInstallationOptions is null || _menuReinstall is null
             || _menuUninstallThenReinstall is null || _menuIgnoreUpdates is null
-            || _menuDetails is null
+            || _menuDetails is null || _menuCopyLink is null
             || _menuOpenInstallLocation is null || _menuDownloadInstaller is null
             || _menuManual is null)
         {
@@ -302,6 +308,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
         _menuReinstall.IsEnabled = !isLocal;
         _menuUninstallThenReinstall.IsEnabled = !isLocal;
         _menuDetails.IsEnabled = !isLocal;
+        _menuCopyLink.IsEnabled = PackageLink.CanLinkTo(package);
         _menuOpenInstallLocation.IsEnabled =
             package.Manager.DetailsHelper.GetInstallLocation(package) is not null;
 
@@ -395,11 +402,25 @@ public class InstalledPackagesPage : AbstractPackagesPage
         bool? interactive = null,
         bool? remove_data = null)
     {
-        var list = packages.ToList();
+        var list = ExcludeNonUninstallable(packages);
         if (list.Count == 0 || MainWindow.Instance is not { } window) return;
         if (!await UninstallConfirmationDialog.ConfirmAsync(window, list)) return;
 
         await LaunchUninstall(list, elevated, interactive, remove_data);
+    }
+
+    // Installer packages (.pkg) have no uninstaller: say so instead of queuing an operation that fails.
+    private static List<IPackage> ExcludeNonUninstallable(IEnumerable<IPackage> packages)
+    {
+        var list = packages.ToList();
+        var refused = list.Where(p => !p.Manager.Capabilities.CanUninstall).ToList();
+        if (refused.Count > 0)
+            MainWindow.Instance?.ShowBanner(
+                CoreTools.Translate("Some packages cannot be uninstalled"),
+                CoreTools.Translate("{0} cannot be uninstalled from UniGetUI. Ask your administrator to remove it.",
+                    string.Join(", ", refused.Select(p => p.Name))),
+                MainWindow.RuntimeNotificationLevel.Error);
+        return list.Except(refused).ToList();
     }
 
     internal static async Task LaunchUninstall(
@@ -408,7 +429,7 @@ public class InstalledPackagesPage : AbstractPackagesPage
         bool? interactive = null,
         bool? remove_data = null)
     {
-        var list = packages.ToList();
+        var list = ExcludeNonUninstallable(packages);
         if (list.Count == 0) return;
 
         foreach (var pkg in list)

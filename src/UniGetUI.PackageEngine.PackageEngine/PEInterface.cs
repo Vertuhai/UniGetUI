@@ -15,10 +15,12 @@ using UniGetUI.PackageEngine.Managers.ChocolateyManager;
 using UniGetUI.PackageEngine.Managers.PowerShellManager;
 using UniGetUI.PackageEngine.Managers.ScoopManager;
 using UniGetUI.PackageEngine.Managers.WingetManager;
+using UniGetUI.PackageEngine.Managers.WinInstallerManager;
 #else
 using UniGetUI.PackageEngine.Managers.AptManager;
 using UniGetUI.PackageEngine.Managers.DnfManager;
 using UniGetUI.PackageEngine.Managers.HomebrewManager;
+using UniGetUI.PackageEngine.Managers.MacPkgManager;
 using UniGetUI.PackageEngine.Managers.PacmanManager;
 using UniGetUI.PackageEngine.Managers.SnapManager;
 using UniGetUI.PackageEngine.Managers.FlatpakManager;
@@ -36,6 +38,7 @@ namespace UniGetUI.PackageEngine
         public static readonly WinGet? WinGet = Create(() => new WinGet());
         public static readonly Scoop? Scoop = Create(() => new Scoop());
         public static readonly Chocolatey? Chocolatey = Create(() => new Chocolatey());
+        public static readonly WinInstaller? WinInstaller = Create(() => new WinInstaller());
 #endif
         public static readonly Npm? Npm = Create(() => new Npm());
         public static readonly Bun? Bun = Create(() => new Bun());
@@ -52,6 +55,7 @@ namespace UniGetUI.PackageEngine
         public static readonly Dnf? Dnf = Create(() => new Dnf());
         public static readonly Pacman? Pacman = Create(() => new Pacman());
         public static readonly Homebrew? Homebrew = Create(() => new Homebrew());
+        public static readonly MacPkg? MacPkg = Create(() => new MacPkg());
         public static readonly Snap? Snap = Create(() => new Snap());
         public static readonly Flatpak? Flatpak = Create(() => new Flatpak());
 #endif
@@ -86,10 +90,12 @@ namespace UniGetUI.PackageEngine
         {
             List<IPackageManager?> candidates = [Npm, Bun, Pip, Cargo, Vcpkg, DotNet, PowerShell7];
 #if WINDOWS
-            candidates.InsertRange(0, [WinGet, Scoop, Chocolatey]);
+            candidates.InsertRange(0, [WinGet, WinInstaller, Scoop, Chocolatey]);
             candidates.Add(PowerShell);
 #else
             candidates.Insert(0, Homebrew);
+            if (OperatingSystem.IsMacOS())
+                candidates.Insert(1, MacPkg);
             if (OperatingSystem.IsLinux())
             {
                 var families = ReadLinuxDistroFamilies();

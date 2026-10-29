@@ -17,6 +17,7 @@ using Avalonia.VisualTree;
 using UniGetUI.Avalonia.Extensions;
 using UniGetUI.Avalonia.Infrastructure;
 using UniGetUI.Avalonia.ViewModels;
+using UniGetUI.Avalonia.ViewModels.Pages;
 using UniGetUI.Avalonia.Views.Controls;
 using UniGetUI.Avalonia.Views.DialogPages;
 using UniGetUI.Avalonia.Views.Pages;
@@ -45,6 +46,7 @@ public enum PageType
     Null, // Used for initializers
     Catalog,
     CatalogEditor,
+    GitRepositories,
 }
 
 public partial class MainWindow : Window
@@ -159,6 +161,7 @@ public partial class MainWindow : Window
     private bool _maxButtonPressed;
     private TrayService? _trayService;
     private bool _allowClose;
+    private bool _showingHiddenTrayIconNotice;
     private readonly ApplicationShutdownCoordinator _shutdownCoordinator = new();
 
     // Saved outer size (DIPs) awaiting a native, exact restore in OnOpened on Windows.
@@ -195,6 +198,9 @@ public partial class MainWindow : Window
     public PageType CurrentPage => ViewModel.CurrentPage_t;
     public bool SoftwareCatalogEnabled => ViewModel.Sidebar.SoftwareCatalogEnabled;
     public bool CatalogEditorEnabled => ViewModel.Sidebar.CatalogEditorEnabled;
+    public bool GitRepositoriesEnabled => ViewModel.Sidebar.GitRepositoriesEnabled;
+    public GitRepositoriesViewModel? GitRepositories => ViewModel.GitRepositories;
+    public void SetGitRepositoriesEnabled(bool enabled) => ViewModel.SetGitRepositoriesEnabled(enabled);
 
     public MainWindow()
     {
@@ -307,6 +313,19 @@ public partial class MainWindow : Window
         if (!_allowClose && (OperatingSystem.IsMacOS() || !Settings.Get(Settings.K.DisableSystemTray)))
         {
             e.Cancel = true;
+            if (_showingHiddenTrayIconNotice)
+                return;
+
+            // Without a tray icon nothing on screen shows that UniGetUI is still running, so say it once.
+            // macOS keeps the app in the Dock, which already makes that visible.
+            if (!OperatingSystem.IsMacOS()
+                && !Settings.IsSystemTrayIconVisible()
+                && !Settings.Get(Settings.K.ShownHiddenTrayIconNotice))
+            {
+                _ = ShowHiddenTrayIconNoticeThenHideAsync();
+                return;
+            }
+
             ViewModel.ClearAllSearchQueries();
             Hide();
             return;
@@ -314,6 +333,46 @@ public partial class MainWindow : Window
 
         e.Cancel = true;
         QuitApplication();
+    }
+
+    private async Task ShowHiddenTrayIconNoticeThenHideAsync()
+    {
+        _showingHiddenTrayIconNotice = true;
+        try
+        {
+            Settings.Set(Settings.K.ShownHiddenTrayIconNotice, true);
+            var dialog = new ImmersiveConfirmationDialog(
+                CoreTools.Translate("UniGetUI is still running"),
+                new TextBlock
+                {
+                    Text = CoreTools.Translate("UniGetUI keeps running in the background and checking for updates, without a system tray icon. To reopen it, launch UniGetUI again. To exit, use More > Quit UniGetUI in the navigation menu. You can change this in Settings > User interface preferences."),
+                    FontSize = 14,
+                    LineHeight = 20,
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                CoreTools.Translate("OK"),
+                CoreTools.Translate("Quit UniGetUI"));
+            await dialog.ShowDialog(this);
+
+            if (dialog.Result is false)
+            {
+                QuitApplication();
+                return;
+            }
+
+            ViewModel.ClearAllSearchQueries();
+            Hide();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not show the background notice:");
+            Logger.Error(ex);
+            Hide();
+        }
+        finally
+        {
+            _showingHiddenTrayIconNotice = false;
+        }
     }
 
     private void ReleaseWindowResources()

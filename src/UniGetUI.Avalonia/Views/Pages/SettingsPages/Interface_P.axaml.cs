@@ -48,6 +48,8 @@ public sealed partial class Interface_P : UserControl, ISettingsPage
         StartupPageSelector.AddItem(CoreTools.Translate("Package Bundles"), "bundles");
         if (catalogEnabled && CoreSettings.Get(CoreSettings.K.EnableCatalogEditor))
             StartupPageSelector.AddItem(CoreTools.Translate("Catalog Editor"), "catalog-editor");
+        if (CoreSettings.Get(CoreSettings.K.EnableGitRepositories))
+            StartupPageSelector.AddItem(CoreTools.Translate("Git Repositories"), "git-repositories");
         StartupPageSelector.AddItem(CoreTools.Translate("Settings"), "settings");
         StartupPageSelector.SettingName = CoreSettings.K.StartupPage;
         StartupPageSelector.Text = CoreTools.Translate("UniGetUI startup page:");
@@ -61,9 +63,35 @@ public sealed partial class Interface_P : UserControl, ISettingsPage
         NavMenuModeSelector.ShowAddedItems();
         NavMenuModeSelector.ValueChanged += (_, _) => MainWindow.Instance?.RefreshNavigationMode();
 
+        DisableSystemTrayCard.StateChanged += (_, _) => UpdateSystemTrayCards();
+        SystemTrayIconCard.StateChanged += (_, _) => UpdateSystemTrayCards();
+        UpdateSystemTrayCards();
+
         NavigationOrderCard.Description = CoreTools.Translate(
             "Drag the pages in the navigation menu, or press {0} on a focused page, to reorder them. Keyboard shortcuts follow the same order.",
             OperatingSystem.IsMacOS() ? "Option+Up/Down" : "Alt+Up/Down");
         NavigationOrderCard.Click += (_, _) => MainWindow.Instance?.ResetNavigationOrder();
+    }
+
+    // The icon only exists while UniGetUI runs in the background, so its checkbox follows the first one,
+    // and each card explains what its unchecked state means for the user.
+    private void UpdateSystemTrayCards()
+    {
+        bool keepsRunning = !CoreSettings.Get(CoreSettings.K.DisableSystemTray);
+        bool iconHidden = CoreSettings.Get(CoreSettings.K.HideSystemTrayIcon);
+
+        DisableSystemTrayCard.WarningText = keepsRunning
+            ? ""
+            : CoreTools.Translate("UniGetUI stops checking for updates and sending notifications until you open it again.");
+
+        SystemTrayIconCard.IsEnabled = keepsRunning;
+        string iconHint = "";
+        if (keepsRunning && iconHidden)
+        {
+            iconHint = CoreTools.Translate("To reopen UniGetUI, launch it again. To exit, use More > Quit UniGetUI in the navigation menu.");
+            if (OperatingSystem.IsLinux())
+                iconHint += " " + CoreTools.Translate("Notifications are not available on Linux, so you will not be told when updates are found.");
+        }
+        SystemTrayIconCard.WarningText = iconHint;
     }
 }

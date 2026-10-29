@@ -31,6 +31,7 @@ public sealed class CatalogEditorPage : AbstractPackagesPage
     private readonly CatalogPackagesLoader _loader;
     private CatalogEditorCatalog? _observedCatalog;
     private Button? _renameButton;
+    private Button? _feedButton;
     private Button? _addButton;
     private Button? _discardButton;
     private bool _pickingFile;
@@ -96,12 +97,16 @@ public sealed class CatalogEditorPage : AbstractPackagesPage
             if (_document.CanEdit && !_pickingFile) _document.NewCatalog();
         });
         _addButton = vm.AddToolbarButton("catalog_add", CoreTools.Translate("Add packages"), AddPackages);
-        vm.AddToolbarButton("delete", CoreTools.Translate("Remove selection from catalog"), RemoveSelection);
-        vm.AddToolbarButton("version", CoreTools.Translate("Pin version"), () => _ = PinVersionAsync(SelectedItem));
-        vm.AddToolbarButton("info_round", CoreTools.Translate("Package details"),
-            () => _ = ShowDetailsForPackage(SelectedItem));
+        EnableWhen(vm.AddToolbarButton("delete", CoreTools.Translate("Remove selection from catalog"), RemoveSelection),
+            () => CanEditCatalog && (HasCheckedPackages || HasSelectedItem));
+        EnableWhen(vm.AddToolbarButton("version", CoreTools.Translate("Pin version"), () => _ = PinVersionAsync(SelectedItem)),
+            () => CanEditCatalog && HasSelectedItem);
+        EnableWhen(vm.AddToolbarButton("info_round", CoreTools.Translate("Package details"),
+            () => _ = ShowDetailsForPackage(SelectedItem)), () => HasSelectedItem);
         _renameButton = vm.AddToolbarButton("rename", CoreTools.Translate("Rename catalog"),
             () => _ = RenameCatalogAsync());
+        _feedButton = vm.AddToolbarButton("package", CoreTools.Translate("Package feed"),
+            () => _ = EditPkgFeedAsync());
     }
 
     protected override ContextMenu GenerateContextMenu()
@@ -167,10 +172,46 @@ public sealed class CatalogEditorPage : AbstractPackagesPage
     private void SyncStatus()
     {
         ViewModel.SubtitleSuffix = _document.IsDirty ? " · " + CoreTools.Translate("Unsaved changes") : "";
-        _renameButton?.IsEnabled = _document.CanEdit && _document.HasSelectedCatalog && !_pickingFile;
-        _addButton?.IsEnabled = _document.CanEdit && _document.HasSelectedCatalog && !_pickingFile;
+        _renameButton?.IsEnabled = CanEditCatalog;
+        _feedButton?.IsEnabled = CanEditCatalog;
+        _addButton?.IsEnabled = CanEditCatalog;
         _discardButton?.IsEnabled = _document.CanDiscardChanges && !_pickingFile;
         SetMainButtonState(_document.CanEdit && !_pickingFile, showDropdown: false);
+        RefreshSelectionGates();
+    }
+
+    private bool CanEditCatalog => _document.CanEdit && _document.HasSelectedCatalog && !_pickingFile;
+
+    // A catalog can list every macOS .pkg, .dmg and .zip of a folder or web feed; IT sets it here and
+    // can check what the feed publishes before deploying the catalog.
+    private async Task EditPkgFeedAsync()
+    {
+        if (!_document.CanEdit || _pickingFile || _document.SelectedCatalog is not { } catalog
+            || GetMainWindow() is not { } window) return;
+        var editor = new PkgFeedEditorViewModel(catalog.PkgFeed, catalog.AllowUnsignedPackages is true, async () =>
+        {
+            var folders = await window.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = CoreTools.Translate("Choose the folder of the package feed"),
+                AllowMultiple = false,
+            });
+            return folders.Count > 0 ? folders[0].TryGetLocalPath() : null;
+        });
+        var dialog = new ImmersiveConfirmationDialog(CoreTools.Translate("Package feed of {0}", catalog.Name),
+            new PkgFeedEditor { DataContext = editor }, CoreTools.Translate("Apply"), CoreTools.Translate("Cancel"))
+        { FocusPrimaryButton = false };
+        var confirm = dialog.GetControl<Button>("PrimaryButton");
+        editor.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(PkgFeedEditorViewModel.IsValid)) confirm.IsEnabled = editor.IsValid;
+        };
+        confirm.IsEnabled = editor.IsValid;
+        await dialog.ShowDialog(window);
+        if (dialog.Result is not true || !_document.CanEdit || !ReferenceEquals(_document.SelectedCatalog, catalog)
+            || !editor.IsValid) return;
+        string location = editor.Location.Trim();
+        catalog.PkgFeed = location.Length > 0 ? location : null;
+        catalog.AllowUnsignedPackages = location.Length > 0 && editor.AllowUnsignedPackages ? true : null;
     }
 
     private async Task RenameCatalogAsync()
@@ -285,6 +326,15 @@ public sealed class CatalogEditorPage : AbstractPackagesPage
             MinWidth = 280,
         };
         AutomationProperties.SetName(picker, CoreTools.Translate("Version"));
+        bool typed = !package.Manager.Capabilities.CanListVersions;
+        var typedBox = new TextBox
+        {
+            Text = entry.Version,
+            PlaceholderText = latest,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 280,
+        };
+        AutomationProperties.SetName(typedBox, CoreTools.Translate("Version"));
         var status = new TextBlock { Text = CoreTools.Translate("Loading versions"), TextWrapping = TextWrapping.Wrap };
         var body = new StackPanel { Spacing = 8 };
         body.Children.Add(new TextBlock
@@ -292,8 +342,13 @@ public sealed class CatalogEditorPage : AbstractPackagesPage
             Text = CoreTools.Translate("Choose the version of {0} that this catalog installs.", entry.Name),
             TextWrapping = TextWrapping.Wrap,
         });
-        body.Children.Add(picker);
-        body.Children.Add(status);
+        if (typed)
+            body.Children.Add(typedBox);
+        else
+        {
+            body.Children.Add(picker);
+            body.Children.Add(status);
+        }
         var dialog = new ImmersiveConfirmationDialog(CoreTools.Translate("Pin version"), body,
             CoreTools.Translate("Pin version"), CoreTools.Translate("Cancel"));
 
@@ -316,11 +371,27 @@ public sealed class CatalogEditorPage : AbstractPackagesPage
             picker.SelectedItem = entry.Version.Length > 0 ? entry.Version : latest;
             picker.IsEnabled = true;
         }
-        _ = LoadVersionsAsync();
+        if (!typed)
+            _ = LoadVersionsAsync();
         await dialog.ShowDialog(window);
 
-        if (dialog.Result is not true || picker.SelectedItem is not string chosen || !_document.CanEdit) return;
-        string version = chosen == latest ? "" : chosen;
+        if (dialog.Result is not true || !_document.CanEdit) return;
+        string version;
+        if (typed)
+        {
+            version = (typedBox.Text ?? "").Trim();
+            if (version.Length > 0 && !CoreTools.IsValidPackageVersion(version))
+            {
+                window.ShowBanner(CoreTools.Translate("Pin version"),
+                    CoreTools.Translate("\"{0}\" is not a valid version.", version),
+                    MainWindow.RuntimeNotificationLevel.Error);
+                return;
+            }
+        }
+        else if (picker.SelectedItem is string chosen)
+            version = chosen == latest ? "" : chosen;
+        else
+            return;
         int index = catalog.Packages.IndexOf(entry);
         if (version == entry.Version || index < 0) return;
         // Replace the entry rather than mutating it, so the list and the unsaved-changes state update.

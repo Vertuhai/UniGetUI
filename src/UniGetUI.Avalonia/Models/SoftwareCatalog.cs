@@ -25,6 +25,16 @@ public sealed class CatalogDefinition
     public required string Name { get; init; }
     [JsonPropertyName("packages")]
     public required CatalogEntry[] Packages { get; init; }
+
+    // A folder or https location of macOS .pkg and .dmg files: every package in it joins this catalog.
+    [JsonPropertyName("pkgFeed")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PkgFeed { get; init; }
+
+    // Lets the feed's packages install even when Gatekeeper rejects them (unsigned or not notarized).
+    [JsonPropertyName("allowUnsignedPackages")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? AllowUnsignedPackages { get; init; }
 }
 
 public sealed class CatalogEntry
@@ -71,8 +81,7 @@ public sealed class CatalogEntry
     public bool MatchesInstalled(IPackage package) =>
         string.Equals(Id, package.Id, StringComparison.OrdinalIgnoreCase)
         && MatchesManager(package.Manager)
-        // Chocolatey's installed inventory assigns DefaultSource and does not retain feed provenance.
-        && (string.Equals(package.Manager.Id, "chocolatey", StringComparison.OrdinalIgnoreCase)
+        && (!package.Manager.Capabilities.InstalledPackagesKeepTheirSource
             || string.Equals(Source, package.Source.Name, StringComparison.OrdinalIgnoreCase));
 }
 
@@ -138,7 +147,9 @@ internal static class SoftwareCatalog
     {
         try
         {
-            return File.Exists(filePath) && Parse(File.ReadAllText(filePath)).Any(c => c.Packages.Length > 0);
+            // A pkgFeed fills its catalog only on macOS and Windows, where an Installer packages manager exists.
+            return File.Exists(filePath) && Parse(File.ReadAllText(filePath)).Any(c => c.Packages.Length > 0
+                || ((OperatingSystem.IsMacOS() || OperatingSystem.IsWindows()) && !string.IsNullOrWhiteSpace(c.PkgFeed)));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -169,6 +180,8 @@ internal static class SoftwareCatalog
                 throw new JsonException("Every catalog requires an id, name and packages array.");
             if (!catalogIds.Add(catalog.Id))
                 throw new JsonException($"Duplicate catalog identifier: {catalog.Id}.");
+            if (catalog.PkgFeed is not null && string.IsNullOrWhiteSpace(catalog.PkgFeed))
+                throw new JsonException($"The pkgFeed of catalog {catalog.Id} is empty.");
 
             var identities = new HashSet<(string, string, string)>();
             foreach (var entry in catalog.Packages)

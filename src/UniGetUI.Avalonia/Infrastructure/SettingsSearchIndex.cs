@@ -56,12 +56,14 @@ public static class SettingsSearchIndex
         new("Navigation menu:", ["sidebar", "nav menu", "navigation", "layout", "docked", "overlay"], typeof(Interface_P), "NavMenuModeSelector"),
         new("Navigation menu order", ["sidebar", "nav menu", "navigation", "order", "reorder", "drag", "tabs", "pages", "shortcuts"], typeof(Interface_P), "NavigationOrderCard"),
         new("Automatically switch to software rendering when Windows has no hardware GPU", ["rendering", "gpu", "software rendering"], typeof(Interface_P), "InterfaceRenderingCard"),
-        new("Close UniGetUI to the system tray", ["system tray", "background", "minimize to tray"], typeof(Interface_P), "DisableSystemTrayCard"),
+        new("Keep UniGetUI running in the background when its window is closed", ["system tray", "background", "minimize to tray", "close", "quit"], typeof(Interface_P), "DisableSystemTrayCard"),
+        new("Show the UniGetUI icon in the system tray", ["system tray", "tray icon", "hide icon", "notification area"], typeof(Interface_P), "SystemTrayIconCard"),
         new("Manage UniGetUI autostart behaviour", ["autostart", "run at login", "startup"], typeof(Interface_P), "EditAutostartSettings"),
         new("Show package icons on package lists", ["package icons"], typeof(Interface_P), "InterfacePackageListsCard"),
         new("Show illustrations on package lists", ["illustrations", "package illustrations"], typeof(Interface_P), "PackageIllustrationsCard"),
         new("Show the installer host on package lists", ["installer host", "download host", "installer url", "column"], typeof(Interface_P), "InstallerHostColumnCard"),
         new("Show the download size on package lists", ["download size", "installer size", "size", "column"], typeof(Interface_P), "DownloadSizeColumnCard"),
+        new("Show the release date on package lists", ["release date", "version date", "publication date", "date", "column"], typeof(Interface_P), "ReleaseDateColumnCard"),
         new("Clear the icon cache", ["icon cache", "clear cache", "cache size"], typeof(Interface_P), "ResetIconCache"),
         new("Select upgradable packages by default", ["select updates", "select upgradable"], typeof(Interface_P), "SelectUpgradableCard"),
         new("User interface preferences", ["interface", "ui"], typeof(Interface_P), null),
@@ -141,6 +143,12 @@ public static class SettingsSearchIndex
         new("Allow importing custom command-line arguments when importing packages from a bundle", ["import cli arguments"], typeof(Administrator), "ImportCLIArgsCard"),
         new("Allow importing custom pre-install and post-install commands when importing packages from a bundle", ["import commands"], typeof(Administrator), "ImportPrePostCard"),
         new("Administrator rights and other dangerous settings", ["administrator", "dangerous"], typeof(Administrator), null),
+
+        // ── Extensions ───────────────────────────────────────────────────────
+        new("Extensions", ["extensions", "modules", "add-ons", "plugins", "optional features"], typeof(ExtensionsHomepage), null),
+        new("Enable Git Repositories", ["git", "git repositories", "clones", "worktrees", "branches"], typeof(GitRepositoriesSettings), "GitRepositoriesCard"),
+        new("Check for new commits automatically", ["git check interval", "fetch"], typeof(GitRepositoriesSettings), "GitCheckIntervalCard"),
+        new("Update clones after checking", ["git auto update", "fast-forward", "pull"], typeof(GitRepositoriesSettings), "GitAutoUpdateCard"),
 
         // ── Experimental ─────────────────────────────────────────────────────
         new("Enable Software Catalog", ["catalog", "software catalog"], typeof(Experimental), "SoftwareCatalogCard"),
@@ -299,6 +307,8 @@ public static class SettingsSearchIndex
         nameof(Backup) => "Package backup",
         nameof(Administrator) => "Administrator rights and other dangerous settings",
         nameof(AgentPolicyInspector) => "Active package broker policy",
+        nameof(ExtensionsHomepage) => "Extensions",
+        nameof(GitRepositoriesSettings) => "Git Repositories",
         nameof(Experimental) => "Experimental settings and developer options",
         _ => "UniGetUI Settings",
     });

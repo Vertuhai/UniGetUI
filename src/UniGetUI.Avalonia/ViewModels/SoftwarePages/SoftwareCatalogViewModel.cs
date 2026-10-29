@@ -209,6 +209,10 @@ public partial class SoftwareCatalogViewModel : ViewModelBase
         CatalogNodes.Clear();
         _allPackages.Clear();
         _updatingCatalogSelection = true;
+        // A pkg feed's source is named by its catalog's id; people know it by the catalog's name.
+        var feedNames = catalogs.Where(c => c.PkgFeed is not null)
+            .DistinctBy(c => c.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(c => c.Id, c => c.Name, StringComparer.OrdinalIgnoreCase);
         try
         {
             foreach (var catalog in catalogs)
@@ -222,7 +226,12 @@ public partial class SoftwareCatalogViewModel : ViewModelBase
                 CatalogNodes.Add(node);
                 _catalogSelection.TryAdd(catalog.Id, node);
                 foreach (var entry in catalog.Packages)
-                    _allPackages.Add(new CatalogTileViewModel(entry, catalog) { Owner = this });
+                    _allPackages.Add(new CatalogTileViewModel(entry, catalog)
+                    {
+                        Owner = this,
+                        SourceLabel = FindManager(entry)?.Id is { } managerId && PkgManagerIds.Contains(managerId)
+                            && feedNames.TryGetValue(entry.Source, out string? feedName) ? feedName : entry.Source,
+                    });
             }
         }
         finally { _updatingCatalogSelection = false; }
@@ -346,7 +355,7 @@ public partial class SoftwareCatalogViewModel : ViewModelBase
         UpdateStates();
         try
         {
-            var catalogs = await SoftwareCatalog.LoadAsync();
+            var catalogs = await ExpandPkgFeedsAsync(await SoftwareCatalog.LoadAsync());
             _notConfigured = false;
             BackgroundDetail = "";
 
@@ -400,6 +409,43 @@ public partial class SoftwareCatalogViewModel : ViewModelBase
     private static IPackageManager? FindManager(CatalogEntry entry) =>
         PEInterface.Managers.FirstOrDefault(entry.MatchesManager);
 
+    // The Installer packages manager (macOS .pkg, Windows .exe and .msi), which serves each catalog's pkgFeed as a source named by the catalog's id.
+    private static readonly string[] PkgManagerIds = ["pkg", "installer"];
+
+    /// <summary>
+    /// Adds every package of a catalog's pkgFeed to that catalog, so that publishing a .pkg in the
+    /// feed is all it takes to offer it. Entries written in the catalog itself come first and win.
+    /// </summary>
+    internal static async Task<CatalogDefinition[]> ExpandPkgFeedsAsync(CatalogDefinition[] catalogs)
+    {
+        if (catalogs.All(c => c.PkgFeed is null)
+            || PEInterface.Managers.FirstOrDefault(m => PkgManagerIds.Contains(m.Id)) is not { } manager
+            || !manager.IsReady())
+            return catalogs;
+        // A refresh shows what IT just published, not the feed listing kept for icon lookups.
+        var published = await Task.Run(() =>
+        {
+            manager.RefreshPackageIndexes();
+            return manager.FindPackages("");
+        });
+        return catalogs.Select(c => c.PkgFeed is null ? c : new CatalogDefinition
+        {
+            Id = c.Id,
+            Name = c.Name,
+            PkgFeed = c.PkgFeed,
+            AllowUnsignedPackages = c.AllowUnsignedPackages,
+            Packages =
+            [
+                .. c.Packages,
+                .. published
+                    .Where(p => string.Equals(p.Source.Name, c.Id, StringComparison.OrdinalIgnoreCase)
+                        && !c.Packages.Any(e => e.Matches(p)))
+                    .Select(CatalogEntry.FromPackage)
+                    .OrderBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase),
+            ],
+        }).ToArray();
+    }
+
     private static (string Manager, string Source) SourceKey(CatalogEntry entry) =>
         ((FindManager(entry)?.Id ?? entry.ManagerName).ToUpperInvariant(), entry.Source.ToUpperInvariant());
 
@@ -412,20 +458,20 @@ public partial class SoftwareCatalogViewModel : ViewModelBase
         _updatingSourceSelection = true;
         try
         {
-            var entries = _allPackages.Select(t => t.Entry).ToArray();
-            foreach (var group in entries.GroupBy(p => SourceKey(p).Manager))
+            foreach (var group in _allPackages.ToArray().GroupBy(t => SourceKey(t.Entry).Manager))
             {
                 var root = new SourceTreeNode
                 {
-                    PackageName = FindManager(group.First())?.DisplayName ?? group.First().ManagerName,
+                    PackageName = FindManager(group.First().Entry)?.DisplayName ?? group.First().Entry.ManagerName,
                     IsExpanded = true,
                 };
-                foreach (var entry in group.DistinctBy(SourceKey))
+                foreach (var tile in group.DistinctBy(t => SourceKey(t.Entry)))
                 {
+                    var entry = tile.Entry;
                     var key = SourceKey(entry);
                     var child = new SourceTreeNode
                     {
-                        PackageName = entry.Source,
+                        PackageName = tile.SourceLabel,
                         Source = entry.Source,
                         IsSelected = previous.GetValueOrDefault(key, true),
                     };
@@ -619,7 +665,7 @@ public partial class SoftwareCatalogViewModel : ViewModelBase
     private static string SortKey(CatalogSortField field, CatalogTileViewModel t) => field switch
     {
         CatalogSortField.Id => t.Entry.Id,
-        CatalogSortField.Source => t.ManagerDisplayName + "/" + t.Entry.Source,
+        CatalogSortField.Source => t.ManagerDisplayName + "/" + t.SourceLabel,
         _ => t.Entry.Name,
     };
 
@@ -805,7 +851,15 @@ public partial class CatalogTileViewModel(CatalogEntry entry, CatalogDefinition?
     public string ManagerDisplayName { get; } =
         PEInterface.Managers.FirstOrDefault(entry.MatchesManager)?.DisplayName ?? entry.ManagerName;
 
-    public string SourceDisplay => $"{ManagerDisplayName}: {Entry.Source}";
+    // The source as people know it: a pkg feed shows its catalog's name rather than the id naming it.
+    public string SourceLabel { get; init; } = entry.Source;
+
+    public string SourceDisplay => $"{ManagerDisplayName}: {SourceLabel}";
+
+    private readonly bool _canUninstall =
+        PEInterface.Managers.FirstOrDefault(entry.MatchesManager)?.Capabilities.CanUninstall ?? true;
+
+    public bool ShowUninstall => IsInstalled && _canUninstall;
 
     // An administrator can pin the version the catalog installs; empty means the latest.
     public bool HasPinnedVersion => Entry.Version.Length > 0;
@@ -862,6 +916,7 @@ public partial class CatalogTileViewModel(CatalogEntry entry, CatalogDefinition?
     [NotifyPropertyChangedFor(nameof(CanInstall))]
     [NotifyPropertyChangedFor(nameof(ShowUpdate))]
     [NotifyPropertyChangedFor(nameof(ShowInstalledLabel))]
+    [NotifyPropertyChangedFor(nameof(ShowUninstall))]
     private bool _isInstalled;
 
     [ObservableProperty]

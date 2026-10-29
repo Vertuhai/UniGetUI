@@ -21,14 +21,30 @@ public partial class CatalogEditorCatalog : ViewModelBase
 
     public ObservableCollection<CatalogEntry> Packages { get; }
 
+    // A folder or https location of macOS packages that fills the catalog, edited from the Package feed dialog.
+    [ObservableProperty]
+    private string? _pkgFeed;
+
+    [ObservableProperty]
+    private bool? _allowUnsignedPackages;
+
     public CatalogEditorCatalog(CatalogDefinition definition)
     {
         _id = definition.Id;
         _name = definition.Name;
         Packages = new(definition.Packages);
+        _pkgFeed = definition.PkgFeed;
+        _allowUnsignedPackages = definition.AllowUnsignedPackages;
     }
 
-    public CatalogDefinition ToDefinition() => new() { Id = Id, Name = Name, Packages = Packages.ToArray() };
+    public CatalogDefinition ToDefinition() => new()
+    {
+        Id = Id,
+        Name = Name,
+        Packages = Packages.ToArray(),
+        PkgFeed = PkgFeed,
+        AllowUnsignedPackages = AllowUnsignedPackages
+    };
 }
 
 public sealed record CatalogAddResult(CatalogEditorCatalog Catalog, int Added, int AlreadyPresent);
@@ -365,6 +381,8 @@ public partial class CatalogEditorViewModel : ViewModelBase
         {
             Id = c.Id,
             Name = c.Name,
+            PkgFeed = c.PkgFeed,
+            AllowUnsignedPackages = c.AllowUnsignedPackages,
             Packages = c.Packages.Select(p => new CatalogEntry
             {
                 Id = p.Id,
