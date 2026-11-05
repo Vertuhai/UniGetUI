@@ -24,6 +24,7 @@ public partial class PackageDetailsViewModel : ObservableObject
 
     public readonly IPackage Package;
     public readonly OperationType OperationRole;
+    private readonly CancellationTokenSource _loadingCancellation = new();
 
     // ── Header ─────────────────────────────────────────────────────────────────
     public string PackageName { get; }
@@ -96,6 +97,8 @@ public partial class PackageDetailsViewModel : ObservableObject
     private Uri? _installerUrl;
     [ObservableProperty]
     private string _installerSize = "";
+    [ObservableProperty]
+    private string? _installerVerification;
 
     public bool CanDownloadInstaller { get; }
 
@@ -144,6 +147,7 @@ public partial class PackageDetailsViewModel : ObservableObject
     public string LabelManifest { get; } = CoreTools.Translate("Manifest");
     public string LabelInstallerType { get; } = CoreTools.Translate("Installer Type");
     public string LabelInstallerUrl { get; } = CoreTools.Translate("Installer URL");
+    public string LabelLastDownload { get; } = CoreTools.Translate("Last download");
     public string LabelUpdateDate { get; } = CoreTools.Translate("Last updated");
     public string LabelDependencies { get; } = CoreTools.Translate("Dependencies");
     public string LabelReleaseNotes { get; } = CoreTools.Translate("Release notes");
@@ -268,6 +272,9 @@ public partial class PackageDetailsViewModel : ObservableObject
         InstallerHash = details.InstallerHash ?? CoreTools.Translate("Not available");
         InstallerType = details.InstallerType ?? CoreTools.Translate("Not available");
         InstallerUrl = details.InstallerUrl;
+        InstallerVerification = PackageEngine.Operations.InstallerVerification
+            .Find(details.InstallerUrl, details.InstallerHash)
+            ?.Describe();
         InstallerSize = details.InstallerSize > 0
             ? CoreTools.FormatAsSize(details.InstallerSize, 2)
             : CoreTools.Translate("Unknown size");
@@ -343,19 +350,23 @@ public partial class PackageDetailsViewModel : ObservableObject
         catch { }
     }
 
+    public void CancelLoading() => _loadingCancellation.Cancel();
+
     private async Task LoadScreenshotsAsync()
     {
+        var token = _loadingCancellation.Token;
         try
         {
-            var uris = await Task.Run(Package.GetScreenshots);
+            var uris = await Task.Run(Package.GetScreenshots, token);
             if (!uris.Any()) return;
 
             using var http = new HttpClient(CoreTools.GenericHttpClientParameters);
             foreach (var uri in uris)
             {
+                if (token.IsCancellationRequested) return;
                 try
                 {
-                    var bytes = await http.GetByteArrayAsync(uri);
+                    var bytes = await http.GetByteArrayAsync(uri, token);
                     using var ms = new MemoryStream(bytes);
                     var bmp = new Bitmap(ms);
                     await Dispatcher.UIThread.InvokeAsync(() =>
@@ -366,6 +377,9 @@ public partial class PackageDetailsViewModel : ObservableObject
                 }
                 catch { /* skip failed screenshots */ }
             }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {

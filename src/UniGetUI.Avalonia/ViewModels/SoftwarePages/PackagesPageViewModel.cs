@@ -153,9 +153,7 @@ public partial class PackagesPageViewModel : ViewModelBase
     public readonly bool LoadsOnStart;
     public readonly bool RoleIsUpdateLike;
     public bool SimilarSearchEnabled { get; private set; }
-    public bool InstallerHostColumnVisible { get; }
-    public bool DownloadSizeColumnVisible { get; }
-    public bool ReleaseDateColumnVisible { get; }
+    public readonly bool OptionalColumnsAvailable;
     // Settable so a page can say why it is empty; takes effect on the next list update.
     public string NoPackagesText { get; set; }
     public readonly string NoMatchesText;
@@ -241,6 +239,14 @@ public partial class PackagesPageViewModel : ViewModelBase
     [ObservableProperty] private string _megaQueryText = "";
     [ObservableProperty] private string _globalQueryText = "";
     [ObservableProperty] private bool _newVersionHeaderVisible;
+    [ObservableProperty] private bool _nameColumnVisible;
+    [ObservableProperty] private bool _idColumnVisible;
+    [ObservableProperty] private bool _versionColumnVisible;
+    [ObservableProperty] private bool _sourceColumnVisible;
+    [ObservableProperty] private bool _installerHostColumnVisible;
+    [ObservableProperty] private bool _downloadSizeColumnVisible;
+    [ObservableProperty] private bool _releaseDateColumnVisible;
+    [ObservableProperty] private bool _columnsFitToWindow;
     [ObservableProperty] private bool _reloadButtonVisible;
     [ObservableProperty] private string _reloadButtonTooltip = "";
     [ObservableProperty] private bool _isFilterPaneOpen;
@@ -319,13 +325,9 @@ public partial class PackagesPageViewModel : ViewModelBase
         _stillLoadingSubtitle = data.MainSubtitle_StillLoading;
         SimilarSearchEnabled = !data.DisableSuggestedResultsRadio;
         RoleIsUpdateLike = data.PageRole == OperationType.Update;
-        NewVersionHeaderVisible = RoleIsUpdateLike;
-        InstallerHostColumnVisible = Settings.Get(Settings.K.ShowInstallerHostColumn)
-            && data.PageRole != OperationType.Uninstall;
-        DownloadSizeColumnVisible = Settings.Get(Settings.K.ShowDownloadSizeColumn)
-            && data.PageRole != OperationType.Uninstall;
-        ReleaseDateColumnVisible = Settings.Get(Settings.K.ShowReleaseDateColumn)
-            && data.PageRole != OperationType.Uninstall;
+        OptionalColumnsAvailable = data.PageRole != OperationType.Uninstall;
+        LoadColumnLayout();
+        ColumnLayoutChanged += LoadColumnLayout;
         ReloadButtonVisible = !DisableReload;
         SearchBoxPlaceholder = CoreTools.Translate("Search for packages");
 
@@ -859,6 +861,73 @@ public partial class PackagesPageViewModel : ViewModelBase
         Settings.SetDictionaryItem(Settings.K.PackageListSortFieldIndex, PageName, value);
     }
 
+    public const string NameColumn = "Name";
+    public const string IdColumn = "Id";
+    public const string VersionColumn = "Version";
+    public const string NewVersionColumn = "NewVersion";
+    public const string SourceColumn = "Source";
+    public const string InstallerHostColumn = "InstallerHost";
+    public const string DownloadSizeColumn = "DownloadSize";
+    public const string ReleaseDateColumn = "ReleaseDate";
+
+    private static event Action? ColumnLayoutChanged;
+
+    private static bool ColumnHidden(string column)
+        => Settings.GetDictionaryItem<string, bool>(Settings.K.HiddenPackageListColumns, column);
+
+    public void LoadColumnLayout()
+    {
+        NameColumnVisible = !ColumnHidden(NameColumn);
+        IdColumnVisible = !ColumnHidden(IdColumn);
+        VersionColumnVisible = !ColumnHidden(VersionColumn);
+        NewVersionHeaderVisible = RoleIsUpdateLike && !ColumnHidden(NewVersionColumn);
+        SourceColumnVisible = !ColumnHidden(SourceColumn);
+        InstallerHostColumnVisible = OptionalColumnsAvailable && Settings.Get(Settings.K.ShowInstallerHostColumn);
+        DownloadSizeColumnVisible = OptionalColumnsAvailable && Settings.Get(Settings.K.ShowDownloadSizeColumn);
+        ReleaseDateColumnVisible = OptionalColumnsAvailable && Settings.Get(Settings.K.ShowReleaseDateColumn);
+        if (!IdColumnVisible && !VersionColumnVisible && !NewVersionHeaderVisible && !SourceColumnVisible
+            && !InstallerHostColumnVisible && !DownloadSizeColumnVisible && !ReleaseDateColumnVisible)
+            NameColumnVisible = true;
+        ColumnsFitToWindow = !Settings.Get(Settings.K.DisablePackageListColumnAutoFit);
+    }
+
+    public static void SetColumnsFitToWindow(bool fit)
+    {
+        Settings.Set(Settings.K.DisablePackageListColumnAutoFit, !fit);
+        ColumnLayoutChanged?.Invoke();
+    }
+
+    public static void SetColumnVisible(string column, bool visible)
+    {
+        switch (column)
+        {
+            case InstallerHostColumn:
+                Settings.Set(Settings.K.ShowInstallerHostColumn, visible);
+                break;
+            case DownloadSizeColumn:
+                Settings.Set(Settings.K.ShowDownloadSizeColumn, visible);
+                break;
+            case ReleaseDateColumn:
+                Settings.Set(Settings.K.ShowReleaseDateColumn, visible);
+                break;
+            default:
+                if (visible) Settings.RemoveDictionaryKey<string, bool>(Settings.K.HiddenPackageListColumns, column);
+                else Settings.SetDictionaryItem(Settings.K.HiddenPackageListColumns, column, true);
+                break;
+        }
+        ColumnLayoutChanged?.Invoke();
+    }
+
+    partial void OnDownloadSizeColumnVisibleChanged(bool value)
+    {
+        if (!value && SortFieldIndex == 5) SortFieldIndex = 0;
+    }
+
+    partial void OnReleaseDateColumnVisibleChanged(bool value)
+    {
+        if (!value && SortFieldIndex == 6) SortFieldIndex = 0;
+    }
+
     partial void OnSortAscendingChanged(bool value)
     {
         FilteredPackages.SetSortDirection(value);
@@ -1214,6 +1283,19 @@ public partial class PackagesPageViewModel : ViewModelBase
         if (LoadsOnStart && _lastLoadHadNoManagerReady && !Loader.IsLoading && !Loader.HasPendingInitialLoad
             && Loader.AnyManagerReady)
             _ = LoadPackages(ReloadReason.Automated);
+    }
+
+    public async Task ReloadAfterManagerExecutableChangedAsync()
+    {
+        if (!LoadsOnStart)
+            return;
+
+        if (Loader.IsLoading)
+            await Loader.WaitForCurrentLoadAsync();
+        else if (Loader.HasPendingInitialLoad)
+            return;
+
+        await Loader.ReloadPackages();
     }
 
     // ─── Sort commands ────────────────────────────────────────────────────────

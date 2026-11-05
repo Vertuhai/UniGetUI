@@ -41,6 +41,7 @@ public static class SettingsSearchIndex
         // ── General ──────────────────────────────────────────────────────────
         new("UniGetUI display language:", ["language", "lang", "locale", "translation", "idioma"], typeof(General), "LanguageSelector"),
         new("Update UniGetUI automatically", ["app update", "auto update", "self update"], typeof(General), "GeneralUpdaterCard"),
+        new("Install UniGetUI updates automatically while it is idle in the background", ["app update", "self update", "silent update", "background"], typeof(General), "InstallUpdatesWhenIdleCard", WindowsOnly: true),
         new("Install prerelease versions of UniGetUI", ["beta", "prerelease", "preview"], typeof(General), "EnableUniGetUIBetaCard"),
         new("Show the release notes after UniGetUI is updated", ["release notes", "changelog"], typeof(General), "ReleaseNotesOnUpdateCard"),
         new("Manage telemetry settings", ["telemetry", "usage data", "analytics"], typeof(General), "GeneralTelemetryCard"),
@@ -61,9 +62,6 @@ public static class SettingsSearchIndex
         new("Manage UniGetUI autostart behaviour", ["autostart", "run at login", "startup"], typeof(Interface_P), "EditAutostartSettings"),
         new("Show package icons on package lists", ["package icons"], typeof(Interface_P), "InterfacePackageListsCard"),
         new("Show illustrations on package lists", ["illustrations", "package illustrations"], typeof(Interface_P), "PackageIllustrationsCard"),
-        new("Show the installer host on package lists", ["installer host", "download host", "installer url", "column"], typeof(Interface_P), "InstallerHostColumnCard"),
-        new("Show the download size on package lists", ["download size", "installer size", "size", "column"], typeof(Interface_P), "DownloadSizeColumnCard"),
-        new("Show the release date on package lists", ["release date", "version date", "publication date", "date", "column"], typeof(Interface_P), "ReleaseDateColumnCard"),
         new("Clear the icon cache", ["icon cache", "clear cache", "cache size"], typeof(Interface_P), "ResetIconCache"),
         new("Select upgradable packages by default", ["select updates", "select upgradable"], typeof(Interface_P), "SelectUpgradableCard"),
         new("User interface preferences", ["interface", "ui"], typeof(Interface_P), null),

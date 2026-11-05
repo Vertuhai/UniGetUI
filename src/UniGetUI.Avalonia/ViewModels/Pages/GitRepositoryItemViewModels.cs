@@ -8,6 +8,9 @@ namespace UniGetUI.Avalonia.ViewModels.Pages;
 /// <summary>How a clone's state is shown: the colour of its badge.</summary>
 public enum GitBadgeKind { Unknown, Ok, Update, Warning, Error }
 
+/// <summary>The order of the clones or of the worktrees; Default keeps the order they were listed in.</summary>
+public enum GitListSort { Default, NameAscending, NameDescending, SizeDescending, SizeAscending }
+
 /// <summary>Turns engine states into the words and badge colours the page shows.</summary>
 internal static class GitStatusText
 {
@@ -39,6 +42,7 @@ internal static class GitStatusText
             status.CurrentBranch ?? "", status.DefaultBranch ?? ""),
         GitRepositoryState.DetachedHead => CoreTools.Translate("No branch checked out"),
         GitRepositoryState.NoUpstream => CoreTools.Translate("No remote branch to follow"),
+        GitRepositoryState.Error when status.RemoteRefreshFailed => CoreTools.Translate("Could not refresh from remote"),
         _ => CoreTools.Translate("Could not be checked"),
     };
 
@@ -67,7 +71,7 @@ internal static class GitStatusText
             "Only a clone checked out on {0} is updated.", status.DefaultBranch ?? ""),
         GitRepositoryState.NoUpstream => CoreTools.Translate(
             "It has no remote, or its remote has no main or master branch. You can choose the branch to follow."),
-        _ => status.Error ?? "",
+        _ => GitError.Summarize(status.Error ?? ""),
     };
 }
 
@@ -86,7 +90,8 @@ public partial class GitRepositoryItemViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(StateText), nameof(StateDetail), nameof(BranchText), nameof(CanUpdate),
-        nameof(IsOk), nameof(IsUpdate), nameof(IsWarning), nameof(IsError), nameof(IsUnknown))]
+        nameof(IsOk), nameof(IsUpdate), nameof(IsWarning), nameof(IsError), nameof(IsUnknown),
+        nameof(DetailText), nameof(CheckText), nameof(HasErrorDetails))]
     private GitRepositoryStatus? _status;
 
     [ObservableProperty]
@@ -115,6 +120,8 @@ public partial class GitRepositoryItemViewModel : ViewModelBase
     public bool IsUnknown => GitStatusText.Kind(Status) == GitBadgeKind.Unknown;
     public bool CanUpdate => Status?.CanUpdate == true && !IsBusy;
     public bool IsIdle => !IsBusy;
+    public bool HasErrorDetails => !string.IsNullOrWhiteSpace(Status?.Error);
+    public string CheckText => IsError ? CoreTools.Translate("Retry") : CoreTools.Translate("Check");
 
     public string BranchText
     {
@@ -138,8 +145,39 @@ public partial class GitRepositoryItemViewModel : ViewModelBase
         int count => CoreTools.Translate("{0} worktrees", count),
     };
 
+    /// <summary>The bytes the main clone takes, its .git folder included; null until measured.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SizeText), nameof(TotalSize), nameof(TotalSizeText))]
+    private long? _cloneSize;
+
+    /// <summary>The bytes its linked worktrees take together; null until measured, or when it has none.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SizeText), nameof(TotalSize), nameof(TotalSizeText))]
+    private long? _worktreesSize;
+
+    /// <summary>The clone and its linked worktrees together, what the size column shows and sorts by.</summary>
+    public long? TotalSize => CloneSize is { } clone ? clone + (WorktreesSize ?? 0) : null;
+    public string TotalSizeText => TotalSize is { } bytes ? CoreTools.FormatAsSize(bytes) : "";
+
+    internal bool IsMeasuringSize { get; set; }
+    internal int SizeGeneration { get; set; }
+    internal IReadOnlyList<string>? SizeWorktreePaths { get; set; }
+
+    public string SizeText => (CloneSize, WorktreesSize) switch
+    {
+        (null, _) => "",
+        (long clone, null or 0) => CoreTools.Translate("{0} on disk", CoreTools.FormatAsSize(clone)),
+        (long clone, long worktrees) => CoreTools.Translate("{0} on disk, {1} in worktrees",
+            CoreTools.FormatAsSize(clone), CoreTools.FormatAsSize(worktrees)),
+    };
+
     /// <summary>The line under the branch: its worktrees and when it was last checked, whichever are known.</summary>
-    public string DetailText => string.Join(" · ", new[] { WorktreeCountText, LastCheckedText }.Where(text => text.Length > 0));
+    public string DetailText => string.Join(" · ", new[]
+    {
+        WorktreeCountText,
+        LastCheckedText,
+        Status?.RemoteRefreshFailed == true ? CoreTools.Translate("Remote information may be out of date") : "",
+    }.Where(text => text.Length > 0));
 }
 
 public sealed partial class GitWorktreeItemViewModel : ObservableObject
@@ -179,6 +217,14 @@ public sealed partial class GitWorktreeItemViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasLocalChanges), nameof(IsCheckingChanges), nameof(IsSafeToRemove))]
     private bool? _localChanges;
+
+    /// <summary>The bytes its folder takes; null until measured, which happens after everything else is shown.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SizeText), nameof(HasSize))]
+    private long? _size;
+
+    public string SizeText => Size is { } bytes ? CoreTools.FormatAsSize(bytes) : "";
+    public bool HasSize => Size is not null;
 
     public bool HasLocalChanges => LocalChanges == true;
     public bool IsCheckingChanges => LocalChanges is null;

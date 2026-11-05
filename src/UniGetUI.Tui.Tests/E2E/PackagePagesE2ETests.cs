@@ -1,5 +1,6 @@
 using NUnit.Framework;
 using UniGetUI.PackageEngine.Classes.Packages.Classes;
+using UniGetUI.PackageEngine.Operations;
 using UniGetUI.PackageEngine.Operations.History;
 using UniGetUI.PackageEngine.PackageLoader;
 using UniGetUI.Tui.Infrastructure;
@@ -165,10 +166,73 @@ internal sealed class PackagePagesE2ETests : TuiE2ETestBase
         await WaitForDialogAsync("Manage ignored updates");
         await WaitForTextAsync("Fabrikam.Browser", "All versions");
         await ChooseAsync("Fabrikam");
+        await ChooseAsync("Stop ignoring updates");
         await WaitUntilAsync(() => UpgradablePackagesLoader.Instance.Packages.Any(p => p.Id == "Fabrikam.Browser"), "the update to come back");
         NAssert.That(IgnoredUpdatesDatabase.GetDatabase().Keys, Has.None.Contains("Fabrikam.Browser"));
         await Key(K.Escape);
         await WaitForNoDialogAsync();
+    }
+
+    [Test]
+    public async Task ManageIgnoredUpdates_UpdateOnce_KeepsThePackageIgnored()
+    {
+        await ResetAsync(TuiPageIds.Updates);
+        await EnterPage();
+        await FilterPackagesAsync("Fabrikam Browser");
+        await Type("g");
+        await WaitUntilAsync(() => UpgradablePackagesLoader.Instance.Packages.All(p => p.Id != "Fabrikam.Browser"), "the update to be ignored");
+
+        await Type("m");
+        await ChooseAsync("Manage ignored updates");
+        await WaitForDialogAsync("Manage ignored updates");
+        await WaitForTextAsync("Fabrikam.Browser", "119.0.0");
+        await ChooseAsync("Fabrikam");
+        await UpdateOnceAndWaitAsync("Fabrikam.Browser");
+
+        NAssert.That(InstalledVersion("Winget", "Fabrikam.Browser"), Is.EqualTo("119.0.0"));
+        NAssert.That(UpgradablePackagesLoader.Instance.IgnoredPackages.ContainsKey("Fabrikam.Browser"), Is.False);
+        NAssert.That(IgnoredUpdatesDatabase.GetDatabase().Single(kv => kv.Key.Contains("Fabrikam.Browser")).Value, Is.EqualTo("*"));
+        NAssert.That(UpgradablePackagesLoader.Instance.Packages.Any(p => p.Id == "Fabrikam.Browser"), Is.False);
+        await Key(K.Escape);
+        await WaitForNoDialogAsync();
+    }
+
+    [Test]
+    public async Task ManageIgnoredUpdates_UpdateOnce_KeepsUpdatesPaused()
+    {
+        await ResetAsync(TuiPageIds.Updates);
+        await EnterPage();
+        await FilterPackagesAsync("Northwind Terminal");
+        await Type("m");
+        await ChooseAsync("Pause updates for");
+        await ChooseAsync("1 week");
+        await WaitUntilAsync(() => UpgradablePackagesLoader.Instance.Packages.All(p => p.Id != "Northwind.Terminal"), "updates to be paused");
+
+        await FilterPackagesAsync("Contoso Editor");
+        await Type("m");
+        await ChooseAsync("Manage ignored updates");
+        await WaitForDialogAsync("Manage ignored updates");
+        await WaitForTextAsync("Northwind.Terminal", "1.20.1");
+        await ChooseAsync("Northwind");
+        await UpdateOnceAndWaitAsync("Northwind.Terminal");
+
+        NAssert.That(InstalledVersion("Winget", "Northwind.Terminal"), Is.EqualTo("1.20.1"));
+        NAssert.That(UpgradablePackagesLoader.Instance.IgnoredPackages.ContainsKey("Northwind.Terminal"), Is.False);
+        NAssert.That(IgnoredUpdatesDatabase.GetDatabase().Single(kv => kv.Key.Contains("Northwind.Terminal")).Value, Does.StartWith("<"));
+        await Key(K.Escape);
+        await WaitForNoDialogAsync();
+    }
+
+    private async Task UpdateOnceAndWaitAsync(string packageId)
+    {
+        await ChooseAsync("Update once");
+        UpdatePackageOperation? operation = null;
+        await WaitUntilAsync(
+            () => (operation = TuiOperationRegistry.Snapshot().OfType<UpdatePackageOperation>()
+                .FirstOrDefault(o => o.Package.Id == packageId)) is not null,
+            "the update to start");
+        await WaitForOperationsToFinishAsync();
+        await operation!.SuccessHandled;
     }
 
     [Test]
@@ -334,6 +398,37 @@ internal sealed class PackagePagesE2ETests : TuiE2ETestBase
         await WaitForOperationsToFinishAsync();
         string[] files = Directory.GetFiles(folder);
         NAssert.That(files, Has.Length.EqualTo(1));
+        NAssert.That(File.ReadAllText(files[0]), Does.Contain("fake-data placeholder installer"));
+    }
+
+    [Test]
+    public async Task DownloadInstaller_WithAMismatchedHash_FailsThenIsKeptWhenRetriedSkippingIntegrityChecks()
+    {
+        await ResetAsync(TuiPageIds.Discover);
+        await EnterPage();
+        await Type("failing");
+        await Key(K.Enter);
+        await WaitForTextAsync("Fabrikam Failing Updater");
+        await Key(K.Down);
+        await Type("m");
+        await ChooseAsync("Download installer");
+        await WaitForDialogAsync("Download installer");
+        string folder = Path.Join(FakeDataSetUp.Sandbox, "downloads-mismatch-test");
+        await ReplaceTextAsync(folder);
+        await Key(K.Enter);
+        await WaitForOperationsToFinishAsync();
+        NAssert.That(Directory.GetFiles(folder).Where(f => !Path.GetFileName(f).Contains(".partial")), Is.Empty);
+
+        await OnUi(() => Window.NavigateTo(TuiPageIds.Operations));
+        await WaitForTextAsync("Failed");
+        await EnterPage();
+        await Type("m");
+        await ChooseAsync("Retry skipping integrity checks");
+        await WaitForOperationsToFinishAsync();
+
+        string[] files = Directory.GetFiles(folder);
+        NAssert.That(files, Has.Length.EqualTo(1));
+        NAssert.That(Path.GetFileName(files[0]), Does.Not.Contain(".partial"));
         NAssert.That(File.ReadAllText(files[0]), Does.Contain("fake-data placeholder installer"));
     }
 

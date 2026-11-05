@@ -15,6 +15,8 @@ namespace UniGetUI.PackageEngine.Managers.AptManager;
 
 public class Apt : PackageManager
 {
+    public override bool ExpectsInstalledPackages => true;
+
     public Apt()
     {
         Dependencies = [];
@@ -33,6 +35,7 @@ public class Apt : PackageManager
         {
             Id = "apt",
             Name = "Apt",
+            SetupGuide = "PACKAGE_MANAGERS.md#apt",
             Description = CoreTools.Translate(
                 "The default package manager for Debian/Ubuntu-based Linux distributions.<br>Contains: <b>Debian/Ubuntu packages</b>"
             ),

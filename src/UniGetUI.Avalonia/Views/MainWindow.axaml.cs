@@ -47,6 +47,7 @@ public enum PageType
     Catalog,
     CatalogEditor,
     GitRepositories,
+    ManagerHealth,
 }
 
 public partial class MainWindow : Window
@@ -167,6 +168,10 @@ public partial class MainWindow : Window
     // Saved outer size (DIPs) awaiting a native, exact restore in OnOpened on Windows.
     private double _pendingRestoreWidth;
     private double _pendingRestoreHeight;
+    private const double DefaultWindowWidth = 1450;
+    private const double DefaultWindowHeight = 900;
+    private WindowPlacementResult? _unsavedPlacement;
+    private bool _hasOpened;
 
     // Last user-chosen height (px) of the operations panel; restored when re-expanded.
     private double _operationsPanelHeight = 240;
@@ -179,6 +184,7 @@ public partial class MainWindow : Window
     private readonly List<UniGetUiWebView> _webViewsHiddenForModal = new();
     private IDisposable? _modalTitleSubscription;
     private Control? _focusBeforeModal;
+    private bool _modalBackdropPressed;
 
     public enum RuntimeNotificationLevel
     {
@@ -249,6 +255,7 @@ public partial class MainWindow : Window
     protected override void OnOpened(EventArgs e)
     {
         base.OnOpened(e);
+        _hasOpened = true;
         if (!OperatingSystem.IsWindows())
             return;
 
@@ -273,7 +280,6 @@ public partial class MainWindow : Window
 
         SetupMicaAndAccentBorder();
         UpdateWindowCornerPreference();
-        UpdateCaptionButtonInset();
 
         ActualThemeVariantChanged += (_, _) =>
         {
@@ -461,6 +467,11 @@ public partial class MainWindow : Window
             TriggerPageDetails();
             e.Handled = true;
         }
+        else if (isCtrl && isShift && (e.Key == Key.D || (OperatingSystem.IsMacOS() && e.Key == Key.I)))
+        {
+            TriggerPageDetailsPane();
+            e.Handled = true;
+        }
     }
 
     // The page that receives Reload/Find/Select All/Details, or null while a dialog is open; shared
@@ -475,6 +486,11 @@ public partial class MainWindow : Window
     private void TriggerPageSelectAll() => PageShortcutListener?.SelectAllTriggered();
 
     private void TriggerPageDetails() => PageShortcutListener?.DetailsTriggered();
+
+    private IDetailsPaneHost? PageDetailsPaneHost
+        => PageShortcutListener is IDetailsPaneHost { CanToggleDetailsPane: true } host ? host : null;
+
+    private void TriggerPageDetailsPane() => PageDetailsPaneHost?.ToggleDetailsPane();
 
     private void OnCurrentPageChanged(object? sender, PageType pageType)
     {
@@ -1136,10 +1152,15 @@ public partial class MainWindow : Window
         {
             // Width/Height stay NaN until the window has been laid out, which never happens on a
             // daemon launch the user has not opened yet. Saving then would persist a 0x0 size.
-            if (double.IsNaN(Width) || double.IsNaN(Height))
+            if (!_hasOpened || double.IsNaN(Width) || double.IsNaN(Height))
                 return;
 
             int state = WindowState == WindowState.Maximized ? 1 : 0;
+            if (state == 0 && _unsavedPlacement is { } unsaved
+                && WindowPlacement.IsSamePlacement(unsaved, Position, Width, Height))
+                return;
+
+            _unsavedPlacement = null;
             string geometry = $"v2,{Position.X},{Position.Y},{(int)Width},{(int)Height},{state}";
             Settings.SetValue(Settings.K.WindowGeometry, geometry);
         }
@@ -1153,12 +1174,16 @@ public partial class MainWindow : Window
     {
         string geometry = Settings.GetValue(Settings.K.WindowGeometry);
         if (string.IsNullOrEmpty(geometry))
+        {
+            ApplyDefaultGeometry();
             return;
+        }
 
         string[] items = geometry.Split(',');
         if (items.Length is not (5 or 6))
         {
             Logger.Warn($"The restored geometry did not have a supported item count (found length was {items.Length})");
+            ApplyDefaultGeometry();
             return;
         }
 
@@ -1186,6 +1211,7 @@ public partial class MainWindow : Window
         {
             Logger.Error("Could not parse window geometry integers");
             Logger.Error(ex);
+            ApplyDefaultGeometry();
             return;
         }
 
@@ -1196,67 +1222,60 @@ public partial class MainWindow : Window
             // Mirror WinUI behaviour: don't reapply the saved (maximized) bounds, just
             // maximize. The OS / Avalonia picks a sensible un-maximize restore size.
             WindowState = WindowState.Maximized;
+            return;
         }
-        else if (IsRectangleFullyVisible(x, y, width, height))
+
+        var screens = GetPlacementScreens();
+        var placement = new WindowPlacementResult(new PixelPoint(x, y), width, height);
+        if (!WindowPlacement.IsFullyVisible(screens, placement.Position, width, height))
         {
-            Width = width;
-            Height = height;
-            Position = new PixelPoint(x, y);
-            // On Windows our WM_NCCALCSIZE makes the client rect equal the full window rect, so the
-            // saved size is the outer size. Avalonia's Width/Height setter re-adds WS_THICKFRAME via
-            // AdjustWindowRectEx, inflating the window a little on every restart; OnOpened restores
-            // the exact outer rect natively to cancel that drift.
-            if (OperatingSystem.IsWindows())
-            {
-                _pendingRestoreWidth = width;
-                _pendingRestoreHeight = height;
-            }
+            placement = WindowPlacement.FitSaved(screens, placement.Position, width, height, MinWidth, MinHeight);
+            _unsavedPlacement = placement;
+            Logger.Warn($"Restored geometry was outside of desktop bounds, fitted it to {placement}");
         }
-        else
+
+        ApplyPlacement(placement);
+    }
+
+    private void ApplyDefaultGeometry()
+    {
+        var screens = GetPlacementScreens();
+        if (screens.Count == 0)
+            return;
+
+        int primary = Math.Max(0, screens.FindIndex(screen => screen.IsPrimary));
+        var placement = WindowPlacement.ForDefault(screens[primary], DefaultWindowWidth, DefaultWindowHeight, MinWidth, MinHeight);
+        _unsavedPlacement = placement;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        ApplyPlacement(placement);
+    }
+
+    private void ApplyPlacement(WindowPlacementResult placement)
+    {
+        Width = placement.Width;
+        Height = placement.Height;
+        Position = placement.Position;
+        // On Windows our WM_NCCALCSIZE makes the client rect equal the full window rect, so the
+        // saved size is the outer size. Avalonia's Width/Height setter re-adds WS_THICKFRAME via
+        // AdjustWindowRectEx, inflating the window a little on every restart; OnOpened restores
+        // the exact outer rect natively to cancel that drift.
+        if (OperatingSystem.IsWindows())
         {
-            Logger.Warn("Restored geometry was outside of desktop bounds");
+            _pendingRestoreWidth = placement.Width;
+            _pendingRestoreHeight = placement.Height;
         }
     }
 
-    private bool IsRectangleFullyVisible(int x, int y, int width, int height)
+    private List<PlacementScreen> GetPlacementScreens()
     {
-        // Position is in screen pixels, Width/Height are DIPs. Scale width/height
-        // by the DPI of the screen that contains the saved position before comparing
-        // against the union of all monitor bounds (which Avalonia reports in pixels).
-        var screens = Screens?.All;
-        if (screens is null || screens.Count == 0)
-            return true;
+        var result = new List<PlacementScreen>();
+        var screens = Screens;
+        if (screens is null)
+            return result;
 
-        int minX = int.MaxValue, minY = int.MaxValue;
-        int maxX = int.MinValue, maxY = int.MinValue;
-        double hostScaling = 1.0;
-        bool foundHost = false;
-
-        foreach (var screen in screens)
-        {
-            var bounds = screen.Bounds;
-            if (bounds.X < minX) minX = bounds.X;
-            if (bounds.Y < minY) minY = bounds.Y;
-            if (bounds.X + bounds.Width > maxX) maxX = bounds.X + bounds.Width;
-            if (bounds.Y + bounds.Height > maxY) maxY = bounds.Y + bounds.Height;
-
-            if (!foundHost && bounds.Contains(new PixelPoint(x, y)))
-            {
-                hostScaling = screen.Scaling;
-                foundHost = true;
-            }
-        }
-
-        if (!foundHost)
-            hostScaling = Screens?.Primary?.Scaling ?? 1.0;
-
-        int widthPx = (int)(width * hostScaling);
-        int heightPx = (int)(height * hostScaling);
-
-        if (x + 10 < minX || x + widthPx - 10 > maxX || y + 10 < minY || y + heightPx - 10 > maxY)
-            return false;
-
-        return true;
+        foreach (var screen in screens.All)
+            result.Add(new PlacementScreen(screen.Bounds, screen.WorkingArea, screen.Scaling, screen.IsPrimary));
+        return result;
     }
 
     private void MinimizeButton_Click(object? sender, RoutedEventArgs e)
@@ -1454,29 +1473,6 @@ public partial class MainWindow : Window
         NativeMethods.DwmSetWindowAttribute(handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
     }
 
-    private void UpdateCaptionButtonInset()
-    {
-        if (!OperatingSystem.IsWindows() || !WindowButtons.IsVisible)
-            return;
-
-        if (TryGetPlatformHandle()?.Handle is not { } handle || handle == 0)
-            return;
-
-        double inset = 0;
-        if (!NativeMethods.IsZoomed(handle))
-        {
-            uint dpi = NativeMethods.GetDpiForWindow(handle);
-            if (dpi == 0) dpi = 96;
-            uint style = (uint)NativeMethods.GetWindowLongPtr(handle, GWL_STYLE).ToInt64();
-            var frame = default(NativeMethods.RECT);
-            if (NativeMethods.AdjustWindowRectExForDpi(ref frame, style, false, 0, dpi))
-                inset = frame.Right / (dpi / 96.0);
-        }
-
-        CaptionCloseButton.Width = 46 + inset;
-        CaptionCloseButton.Padding = new Thickness(0, 0, inset, 0);
-    }
-
     private void ApplyWindowBorderColor(nint handle)
     {
         int color;
@@ -1520,11 +1516,7 @@ public partial class MainWindow : Window
         if ((msg == WM_SHOWWINDOW || (msg == WM_SIZE && (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)))
             && Instance is { } cornerOwner)
         {
-            Dispatcher.UIThread.Post(() =>
-            {
-                cornerOwner.UpdateWindowCornerPreference();
-                cornerOwner.UpdateCaptionButtonInset();
-            });
+            Dispatcher.UIThread.Post(cornerOwner.UpdateWindowCornerPreference);
         }
 
         if (msg == WM_SETTINGCHANGE && Instance is { } trayOwner)
@@ -2201,6 +2193,29 @@ public partial class MainWindow : Window
 
     private void ModalCloseButton_Click(object? sender, RoutedEventArgs e) =>
         (ModalContent.Content as ImmersiveDialog)?.Close();
+
+    private void ModalLayer_PointerPressed(object? sender, PointerPressedEventArgs e) =>
+        _modalBackdropPressed = ReferenceEquals(e.Source, ModalLayer)
+            && e.GetCurrentPoint(ModalLayer).Properties.IsLeftButtonPressed;
+
+    private void ModalLayer_PointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        bool pressedOnBackdrop = _modalBackdropPressed;
+        _modalBackdropPressed = false;
+        if (!pressedOnBackdrop
+            || e.InitialPressMouseButton != MouseButton.Left
+            || ModalSurface.Bounds.Contains(e.GetPosition(ModalLayer)))
+            return;
+
+        if (ModalContent.Content is ImmersiveDialog dialog)
+        {
+            e.Handled = true;
+            dialog.Close();
+        }
+    }
+
+    private void ModalLayer_PointerCaptureLost(object? sender, PointerCaptureLostEventArgs e) =>
+        _modalBackdropPressed = false;
 
     private void UpdateModalSurfaceSize()
     {

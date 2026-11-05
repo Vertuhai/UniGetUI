@@ -71,7 +71,9 @@ public partial class MainWindow
             Item(CoreTools.Translate("Toggle navigation panel"), ViewModel.ToggleSidebarCommand, null, Key.S, KeyModifiers.Control),
             new NativeMenuItemSeparator(),
             Action(CoreTools.Translate("Reload"), TriggerPageReload, Key.R, enabled: () => PageShortcutListener is not null),
-            Action(CoreTools.Translate("Package details"), TriggerPageDetails, Key.I, enabled: () => PageShortcutListener is not null)]);
+            Action(CoreTools.Translate("Package details"), TriggerPageDetails, Key.I, enabled: () => PageShortcutListener is not null),
+            Action(CoreTools.Translate("Details panel"), TriggerPageDetailsPane, Key.I, KeyModifiers.Shift,
+                enabled: () => PageDetailsPaneHost is not null)]);
 
         // macOS greys Minimize and Zoom out for a window in full screen.
         var window = Submenu(CoreTools.Translate("Window"),
@@ -87,7 +89,8 @@ public partial class MainWindow
             new NativeMenuItemSeparator(),
             Item(CoreTools.Translate("UniGetUI Log"), navigate, "OwnLog"),
             Item(CoreTools.Translate("Package Manager logs"), navigate, "ManagerLog"),
-            Item(CoreTools.Translate("Operation history"), navigate, "OperationHistory"));
+            Item(CoreTools.Translate("Operation history"), navigate, "OperationHistory"),
+            Item(CoreTools.Translate("Manager health"), navigate, "ManagerHealth"));
 
         _macViewMenu = view.Menu;
         sidebar.PropertyChanged += (_, e) =>

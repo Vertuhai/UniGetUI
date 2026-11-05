@@ -198,6 +198,7 @@ public sealed class PackageWrapper : INotifyPropertyChanged, IDisposable, IPacka
     }
 
     public string VersionComboString { get; }
+    public string CardVersionString { get; }
     public string ListedNameTooltip { get; private set; } = "";
     public float ListedOpacity { get; private set; } = 1.0f;
     public string TagBackdropIconPath { get; private set; } = "";
@@ -261,6 +262,11 @@ public sealed class PackageWrapper : INotifyPropertyChanged, IDisposable, IPacka
         Package = package;
         _page = page;
         VersionComboString = package.VersionString;
+        CardVersionString = package.IsUpgradable
+            && !string.IsNullOrWhiteSpace(package.NewVersionString)
+            && package.NewVersionString != package.VersionString
+            ? $"{package.VersionString} → {package.NewVersionString}"
+            : package.VersionString;
         InstalledVersionTooltip = InstalledVersionNotice.BuildTooltip(package);
 
         Package.PropertyChanged += Package_PropertyChanged;
@@ -766,6 +772,7 @@ public sealed class PackageWrapper : INotifyPropertyChanged, IDisposable, IPacka
                 // one host, the publisher hasn't moved hosting — adding/removing CDN mirrors
                 // or architectures shouldn't trigger the warning.
                 if (oldHosts.Overlaps(newHosts)) return;
+                if (WinGet.InstallerHostsAreTrusted(Package, newHosts)) return;
 
                 string tooltip = CoreTools.Translate(
                     "Installer host changed since the installed version.\n"

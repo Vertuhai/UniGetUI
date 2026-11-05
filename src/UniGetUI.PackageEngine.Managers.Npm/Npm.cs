@@ -17,6 +17,17 @@ namespace UniGetUI.PackageEngine.Managers.NpmManager
 {
     public class Npm : PackageManager
     {
+        protected override IEnumerable<ManagerMaintenanceAction> GetExtraMaintenanceActions()
+        {
+            yield return new ManagerMaintenanceAction
+            {
+                Id = "clear-cache",
+                Title = CoreTools.Translate("Clear cache"),
+                Description = CoreTools.Translate("Delete the packages Npm keeps in its cache."),
+                RunAsync = () => RunMaintenanceCommandAsync(Status.ExecutablePath, WithCallArguments("cache clean --force")),
+            };
+        }
+
         public override bool CommandLineIsShellInterpreted => true;
 
         public Npm()
@@ -38,6 +49,8 @@ namespace UniGetUI.PackageEngine.Managers.NpmManager
             {
                 Id = "npm",
                 Name = "Npm",
+                SetupGuide = "PACKAGE_MANAGERS.md#npm",
+                InstallCommands = new(Windows: "winget install --exact --id OpenJS.NodeJS.LTS", MacOS: "brew install node"),
                 Description = CoreTools.Translate(
                     "Node JS's package manager. Full of libraries and other utilities that orbit the javascript world<br>Contains: <b>Node javascript libraries and other related utilities</b>"
                 ),
