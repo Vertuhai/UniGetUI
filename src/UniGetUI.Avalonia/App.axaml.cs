@@ -20,6 +20,7 @@ using UniGetUI.Avalonia.Views.Controls;
 using UniGetUI.Avalonia.Views.DialogPages;
 using UniGetUI.Core.Data;
 using UniGetUI.Core.Logging;
+using UniGetUI.Interface.Enums;
 using UniGetUI.PackageEngine;
 using CoreSettings = global::UniGetUI.Core.SettingsEngine.Settings;
 
@@ -315,11 +316,32 @@ public partial class App : Application
             return;
         }
 
+        RouteSelfUpdateToastAction(args);
         await StartupArgumentProcessor.ProcessAsync(args);
+    }
+
+    private static void RouteSelfUpdateToastAction(string[] args)
+    {
+        foreach (string arg in args)
+        {
+            string? action = WindowsAppNotificationBridge.TryParseToastLaunchArgument(arg);
+            if (string.Equals(action, NotificationArguments.ShowSelfUpdate, StringComparison.OrdinalIgnoreCase))
+            {
+                WindowsAppNotificationBridge.RaiseActivation(action);
+                return;
+            }
+        }
     }
 
     private static void HandleSecondaryInstanceArgs(MainWindow mainWindow, string[] args)
     {
+        if (mainWindow.IsQuitting)
+        {
+            Logger.Warn("UniGetUI is quitting, so a forwarded launch will start it again once it has exited");
+            AvaloniaAppHost.RecordLaunchWhileQuitting(args);
+            return;
+        }
+
         bool isDaemonLaunch = args.Contains(AvaloniaCliHandler.DAEMON);
         CoreData.IsDaemon = isDaemonLaunch;
 

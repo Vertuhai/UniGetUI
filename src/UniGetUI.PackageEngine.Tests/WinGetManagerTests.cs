@@ -1047,6 +1047,90 @@ public sealed class WinGetManagerTests : IDisposable
         Assert.Equal("Contoso.StoreApp", Assert.Single(helper.BuildUpdatePackages(response)).Name);
     }
 
+    private static ListResponse PingetCorrelatedListResponse(string id, string localId) =>
+        PingetCliHelper.DeserializeJson<ListResponse>(
+            $$"""
+            {
+                "Matches": [
+                    {
+                        "Name": "OpenTTD",
+                        "Id": "{{id}}",
+                        "LocalId": "{{localId.Replace("\\", "\\\\")}}",
+                        "InstalledVersion": "Unknown",
+                        "AvailableVersion": "15.3",
+                        "SourceName": "winget",
+                        "Publisher": "OpenTTD",
+                        "Scope": "Machine",
+                        "InstallerCategory": "exe",
+                        "InstallLocation": "D:\\SteamLibrary\\steamapps\\common\\OpenTTD",
+                        "PackageFamilyNames": [],
+                        "ProductCodes": [],
+                        "UpgradeCodes": []
+                    }
+                ],
+                "Warnings": [],
+                "Truncated": false
+            }
+            """
+        );
+
+    [Theory]
+    [InlineData(@"ARP\Machine\X86\Steam App 1536610", LocalSourceKind.Steam)]
+    [InlineData(@"ARP\Machine\X86\Uplay Install 4311", LocalSourceKind.Ubisoft)]
+    [InlineData(@"ARP\Machine\X86\1207658924_is1", LocalSourceKind.Gog)]
+    public void PingetCliHelperKeepsLauncherGamesCorrelatedToACatalogPackageOnTheirLauncher(
+        string localId,
+        LocalSourceKind expectedSourceKind
+    )
+    {
+        var manager = new WinGet();
+        var helper = new PingetCliHelper(manager, @"C:\Program Files\UniGetUI\pinget.exe");
+        ListResponse response = PingetCorrelatedListResponse("OpenTTD.OpenTTD", localId);
+
+        Package installed = Assert.Single(helper.BuildInstalledPackages(response));
+        Assert.Equal(localId, installed.Id);
+        Assert.Same(GetExpectedSource(manager, expectedSourceKind), installed.Source);
+        Assert.Empty(helper.BuildUpdatePackages(response));
+    }
+
+    [Fact]
+    public void PingetCliHelperStillOffersUpdatesForTheLauncherClientsThemselves()
+    {
+        var helper = new PingetCliHelper(new WinGet(), @"C:\Program Files\UniGetUI\pinget.exe");
+        ListResponse response = PingetCorrelatedListResponse("Valve.Steam", @"ARP\Machine\X86\Steam");
+
+        Package installed = Assert.Single(helper.BuildInstalledPackages(response));
+        Assert.Equal("Valve.Steam", installed.Id);
+        Assert.Equal("winget", installed.Source.Name);
+        Assert.Equal("Valve.Steam", Assert.Single(helper.BuildUpdatePackages(response)).Id);
+    }
+
+    [Theory]
+    [InlineData(@"ARP\Machine\X86\Steam App 1536610", LocalSourceKind.Steam)]
+    [InlineData(@"ARP\User\X64\Uplay Install 4311", LocalSourceKind.Ubisoft)]
+    [InlineData(@"ARP\Machine\X86\1207658924_is1", LocalSourceKind.Gog)]
+    public void GetLauncherGameSourceRecognizesLauncherGameEntries(
+        string localId,
+        LocalSourceKind expectedSourceKind
+    )
+    {
+        var manager = new WinGet();
+
+        Assert.Same(GetExpectedSource(manager, expectedSourceKind), manager.GetLauncherGameSource(localId));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(@"ARP\Machine\X86\Steam")]
+    [InlineData(@"ARP\Machine\X86\Uplay")]
+    [InlineData(@"ARP\Machine\X64\{12345678-1234-1234-1234-123456789ABC}")]
+    [InlineData(@"ARP\Machine\X64\Contoso Tool_is1")]
+    public void GetLauncherGameSourceIgnoresOtherEntries(string? localId)
+    {
+        Assert.Null(new WinGet().GetLauncherGameSource(localId));
+    }
+
     [Fact]
     public void GetCliToolPreferenceUsesEnvironmentBeforeSettings()
     {
@@ -1958,6 +2042,25 @@ public sealed class WinGetManagerTests : IDisposable
     }
 
     [Fact]
+    public void AnExplicitUpdateVersionIsTheOneTrustedAndRecordedAsUpgraded()
+    {
+        var (manager, package) = CreateTrustTestPackage("Contoso.ExplicitTarget");
+        var options = new InstallOptions { SkipMajorUpdates = true, Version = "1.2.0", VersionIsExplicit = true };
+
+        var recorded = RecordTrustedHosts(() =>
+        {
+            manager.OperationHelper.GetParameters(package, options, OperationType.Update);
+            manager.OperationHelper.GetResult(package, OperationType.Update, [], 0);
+        });
+
+        Assert.Equal("1.2.0", Assert.Single(recorded).Version);
+        Assert.Equal(
+            "1.2.0",
+            Settings.GetDictionaryItem<string, string>(Settings.K.WinGetAlreadyUpgradedPackages, package.Id)
+        );
+    }
+
+    [Fact]
     public void ARebootToFinishTheInstallStillTrustsItsHost()
     {
         var (manager, package) = CreateTrustTestPackage("Contoso.RebootToFinish");
@@ -2011,6 +2114,100 @@ public sealed class WinGetManagerTests : IDisposable
         );
 
         Assert.Empty(recorded);
+    }
+
+    [Theory]
+    [InlineData(true, true, "", "1.5.0")]
+    [InlineData(false, true, "", null)]
+    [InlineData(true, false, "", null)]
+    [InlineData(true, true, "1.2.0", "1.2.0")]
+    public void AnUpdateTargetsAVersionOnlyWhenPinnedWhileMajorUpdatesAreSkipped(
+        bool skipsMajorUpdates,
+        bool pinnedWithinMajor,
+        string requestedVersion,
+        string? targetedVersion
+    )
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId($"Contoso.Pinned{skipsMajorUpdates}{pinnedWithinMajor}{requestedVersion}")
+            .WithVersion("1.0.0")
+            .WithNewVersion("1.5.0")
+            .Build();
+        package.OverridenOptions.PinUpdateToNewVersion = pinnedWithinMajor;
+        var options = new InstallOptions { SkipMajorUpdates = skipsMajorUpdates };
+        if (requestedVersion.Length > 0)
+        {
+            options.Version = requestedVersion;
+            options.VersionIsExplicit = true;
+        }
+
+        var parameters = RecordTrustedHostsParameters(manager, package, OperationType.Update, options);
+        var standalone = manager.OperationHelper.GetStandaloneParameters(package, options, OperationType.Update);
+
+        foreach (var built in new[] { parameters, standalone })
+        {
+            int index = built.ToList().IndexOf("--version");
+            if (targetedVersion is null)
+                Assert.Equal(-1, index);
+            else
+                Assert.Equal(CoreTools.EscapeCommandLineArgument(targetedVersion), built[index + 1]);
+        }
+    }
+
+    [Fact]
+    public void AMajorUpdateIsNeverPinned()
+    {
+        var (manager, package) = CreateTrustTestPackage("Contoso.MajorNotPinned");
+
+        var parameters = RecordTrustedHostsParameters(
+            manager,
+            package,
+            OperationType.Update,
+            new InstallOptions { SkipMajorUpdates = true }
+        );
+
+        Assert.DoesNotContain("--version", parameters);
+    }
+
+    [Fact]
+    public void ARequestedUpdateVersionIsRefusedUnderPinget()
+    {
+        var (manager, package) = CreateTrustTestPackage("Contoso.PinnedPinget");
+        SetCliToolKind(manager, WinGetCliToolKind.BundledPinget);
+
+        Assert.Throws<InvalidOperationException>(
+            () => manager.OperationHelper.GetParameters(
+                package,
+                new InstallOptions { SkipMajorUpdates = true, Version = "1.2.0", VersionIsExplicit = true },
+                OperationType.Update
+            )
+        );
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void UpdatesWithinTheMajorAreOfferedOnlyThroughSystemWinGet(bool systemWinGet)
+    {
+        var manager = new WinGet();
+        SetCliToolKind(manager, systemWinGet ? WinGetCliToolKind.SystemWinGet : WinGetCliToolKind.BundledPinget);
+
+        Assert.Equal(systemWinGet, manager.CanUpdateToExactVersion);
+    }
+
+    private static IReadOnlyList<string> RecordTrustedHostsParameters(
+        WinGet manager,
+        IPackage package,
+        OperationType operation,
+        InstallOptions options
+    )
+    {
+        IReadOnlyList<string> parameters = [];
+        RecordTrustedHosts(() => parameters = manager.OperationHelper.GetParameters(package, options, operation));
+        return parameters;
     }
 
     private static (WinGet Manager, IPackage Package) CreateTrustTestPackage(string id)

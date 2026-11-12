@@ -83,7 +83,8 @@ public static class SettingsSearchIndex
         new("Do not automatically install updates when the network connection is metered", ["metered connection"], typeof(Scheduler), "AUPMeteredCard"),
         new("Do not automatically install updates when the device runs on battery", ["battery"], typeof(Scheduler), "AUPBatteryCard"),
         new("Do not automatically install updates when the battery saver is on", ["battery saver"], typeof(Scheduler), "AUPBatterySaverCard"),
-        new("Quit UniGetUI once automatic updates have finished, if its window is not open", ["quit", "close", "exit after updates"], typeof(Scheduler), "QuitAfterAutomaticUpdatesCard"),
+        new("Quit UniGetUI once automatic updates have finished", ["quit", "close", "exit after updates"], typeof(Scheduler), "QuitAfterAutomaticUpdatesCard"),
+        new("Quit UniGetUI when automatic updates find nothing to install", ["quit", "close", "exit", "no updates"], typeof(Scheduler), "QuitWhenNothingToInstallCard"),
         new("Minimum age for updates", ["minimum age", "update security"], typeof(Updates), "MinimumUpdateAgeSelector"),
         new("Custom minimum age (days)", ["custom age"], typeof(Updates), "MinimumUpdateAgeCustomInput"),
         new("Warn me when the installer URL host changes between the installed version and the new version (WinGet only)", ["installer host", "url host"], typeof(Updates), "InstallerHostWarningCard"),
@@ -148,6 +149,10 @@ public static class SettingsSearchIndex
         new("Enable Git Repositories", ["git", "git repositories", "clones", "worktrees", "branches"], typeof(GitRepositoriesSettings), "GitRepositoriesCard"),
         new("Check for new commits automatically", ["git check interval", "fetch"], typeof(GitRepositoriesSettings), "GitCheckIntervalCard"),
         new("Update clones after checking", ["git auto update", "fast-forward", "pull"], typeof(GitRepositoriesSettings), "GitAutoUpdateCard"),
+        new("Agent Skills", ["skills", "plugins", "coding agents", "extensions"], typeof(AgentSkillsSettingsControl), null),
+        new("Search skills.sh", ["skills.sh", "skills discovery", "registry"], typeof(AgentSkillsSettingsControl), "SkillsShDiscoveryToggle"),
+        new("Installation targets", ["skills", "agents", "codex", "claude", "copilot"], typeof(AgentSkillsSettingsControl), "TargetModeSelector"),
+        new("Notion integration", ["skills", "notion", "sign in"], typeof(AgentSkillsSettingsControl), "NotionExpander"),
 
         // ── Experimental ─────────────────────────────────────────────────────
         new("Enable Software Catalog", ["catalog", "software catalog"], typeof(Experimental), "SoftwareCatalogCard"),
@@ -308,6 +313,7 @@ public static class SettingsSearchIndex
         nameof(AgentPolicyInspector) => "Active package broker policy",
         nameof(ExtensionsHomepage) => "Extensions",
         nameof(GitRepositoriesSettings) => "Git Repositories",
+        nameof(AgentSkillsSettingsControl) => "Agent Skills",
         nameof(Experimental) => "Experimental settings and developer options",
         _ => "UniGetUI Settings",
     });

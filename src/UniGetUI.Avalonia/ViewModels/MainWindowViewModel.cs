@@ -24,6 +24,7 @@ using UniGetUI.PackageEngine;
 using UniGetUI.PackageEngine.Enums;
 using UniGetUI.PackageEngine.Interfaces;
 using UniGetUI.PackageEngine.ManagerClasses.Classes;
+using UniGetUI.PackageEngine.Operations.Reboot;
 using UniGetUI.PackageEngine.PackageLoader;
 using UniGetUI.PackageOperations;
 
@@ -39,7 +40,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private SoftwareCatalogPage? CatalogPage;
     private CatalogEditorPage? _catalogEditorPage;
     public CatalogEditorViewModel? CatalogEditor { get; }
-    private GitRepositoriesPage? _gitRepositoriesPage;
+    private readonly Dictionary<PageType, AppExtensionSession> _extensions = [];
     public GitRepositoriesViewModel? GitRepositories { get; private set; }
     private SettingsBasePage? SettingsPage;
     private SettingsBasePage? ManagersPage;
@@ -121,8 +122,6 @@ public partial class MainWindowViewModel : ViewModelBase
         if (_operationBatch.Count > 0
             && _operationBatch.All(o => o.Status is not (OperationStatus.InQueue or OperationStatus.Running)))
         {
-            foreach (var old in _operationBatch)
-                old.StatusChanged -= OnOperationStatusChanged;
             _operationBatch.Clear();
             _batchSummaryShown = false;
         }
@@ -130,18 +129,87 @@ public partial class MainWindowViewModel : ViewModelBase
         if (!_operationBatch.Contains(op))
         {
             _operationBatch.Add(op);
-            op.StatusChanged += OnOperationStatusChanged;
+            ShutdownController.OnOperationJoined();
         }
+
+        WatchOperations();
+    }
+
+    private readonly HashSet<AbstractOperation> _watchedOperations = [];
+
+    private void WatchOperations()
+    {
+        var wanted = Operations.Select(vm => vm.Operation).Concat(_operationBatch).ToHashSet();
+        foreach (var op in _watchedOperations.Where(op => !wanted.Contains(op)).ToList())
+        {
+            op.StatusChanged -= OnOperationStatusChanged;
+            _watchedOperations.Remove(op);
+        }
+
+        foreach (var op in wanted.Where(_watchedOperations.Add))
+            op.StatusChanged += OnOperationStatusChanged;
     }
 
     private void OnOperationStatusChanged(object? sender, OperationStatus e)
         => Dispatcher.UIThread.Post(() =>
         {
+            if (sender is AbstractOperation op
+                && e is OperationStatus.InQueue or OperationStatus.Running
+                && !_operationBatch.Contains(op))
+                AddToBatch(op);
+
             OnPropertyChanged(nameof(OperationsHeaderText));
             OnPropertyChanged(nameof(HasFailedOperations));
             OnPropertyChanged(nameof(ShowFailedOperationBadge));
             MaybeShowBatchSummaryToast();
+            ShutdownController.OnOperationsChanged();
         });
+
+    private ShutdownWhenFinishedController? _shutdownController;
+
+    public ShutdownWhenFinishedController ShutdownController => _shutdownController ??= CreateShutdownController();
+
+    private ShutdownWhenFinishedController CreateShutdownController() => new(
+        SystemRestartService.CanShutDown,
+        ShutdownBatchStates,
+        () => PendingRebootStore.HasPending,
+        RunShutdownCountdownAsync,
+        ShowShutdownCanceledByFailureToast);
+
+    private List<BatchOperationState> ShutdownBatchStates() =>
+        _operationBatch
+            .Concat(Operations
+                .Select(vm => vm.Operation)
+                .Where(op => op.Status is OperationStatus.InQueue or OperationStatus.Running))
+            .Distinct()
+            .Select(op => new BatchOperationState(op.Status, op.SystemRestartRequired))
+            .ToList();
+
+    private void ShowShutdownCanceledByFailureToast()
+    {
+        var toast = new InfoBarViewModel
+        {
+            Title = CoreTools.Translate("Your computer was not shut down"),
+            Message = CoreTools.Translate(
+                "Some operations failed, so UniGetUI did not shut down your computer. Review the failed operations, then shut it down manually."),
+            Severity = InfoBarSeverity.Warning,
+            IsClosable = true,
+            IsOpen = true,
+        };
+        toast.OnClosed = () => DismissToast(toast);
+        ShowToast(toast);
+    }
+
+    private static async Task<ShutdownCountdownOutcome> RunShutdownCountdownAsync(
+        bool restart,
+        Func<bool> operationsActive,
+        CancellationToken newWorkStarted)
+    {
+        if (MainWindow.Instance is not { } owner) return ShutdownCountdownOutcome.Canceled;
+
+        owner.ShowFromTray();
+        return await SystemRestartService.CountdownAndShutDownAsync(owner, restart, operationsActive, newWorkStarted);
+    }
 
     // Opt-in: one toast summarizing the batch once every operation in it has finished.
     private void MaybeShowBatchSummaryToast()
@@ -185,7 +253,11 @@ public partial class MainWindowViewModel : ViewModelBase
     private void ClearFinishedOperations() => AvaloniaOperationRegistry.ClearFinished();
 
     [RelayCommand]
-    private void CancelAllOperations() => AvaloniaOperationRegistry.CancelAll();
+    private void CancelAllOperations()
+    {
+        ShutdownController.SetArmed(false);
+        AvaloniaOperationRegistry.CancelAll();
+    }
 
     // ─── Sidebar ─────────────────────────────────────────────────────────────
     public SidebarViewModel Sidebar { get; } = new();
@@ -478,6 +550,10 @@ public partial class MainWindowViewModel : ViewModelBase
 
         if (UpgradablePackagesLoader.Instance is { } upgLoader)
         {
+            upgLoader.FinishedLoading += (_, _) => Dispatcher.UIThread.Post(() =>
+            {
+                foreach (var session in _extensions.Values) _ = session.CheckForUpdatesAsync();
+            });
             upgLoader.PackagesChanged += (_, _) =>
                 Dispatcher.UIThread.Post(() =>
                 {
@@ -488,8 +564,8 @@ public partial class MainWindowViewModel : ViewModelBase
             // Notifications and auto-update logic are handled by SoftwareUpdatesPage.WhenPackagesLoaded
         }
 
-        if (Sidebar.GitRepositoriesEnabled)
-            StartGitRepositories();
+        foreach (var extension in AppExtensions.All.Where(extension => extension.IsEnabled))
+            SetExtensionEnabled(extension.Page, true);
 
         MaintenanceScheduler.Start();
 
@@ -503,16 +579,20 @@ public partial class MainWindowViewModel : ViewModelBase
 
         Sidebar.NavigationRequested += (_, pageType) => NavigateTo(pageType);
 
-        AvaloniaAutoUpdater.UpdateAvailable += version => Dispatcher.UIThread.Post(() =>
+        AvaloniaAutoUpdater.UpdateAvailable += (version, userAsked) => Dispatcher.UIThread.Post(() =>
         {
-            UpdatesBanner.Severity = InfoBarSeverity.Success;
-            UpdatesBanner.Title = CoreTools.Translate("UniGetUI {0} is ready to be installed.", version);
-            UpdatesBanner.Message = CoreTools.Translate("The update process will start after closing UniGetUI");
-            UpdatesBanner.ActionButtonText = CoreTools.Translate("Update now");
-            UpdatesBanner.ActionButtonCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(AvaloniaAutoUpdater.TriggerInstall);
-            UpdatesBanner.IsClosable = true;
-            UpdatesBanner.IsOpen = true;
+            ShowSelfUpdateBanner(version);
+            if (userAsked)
+                _ = ShowSelfUpdateDialogAsync();
         });
+
+        AvaloniaAutoUpdater.PendingUpdateChanged += () =>
+        {
+            string? pendingVersion = AvaloniaAutoUpdater.PendingUpdate?.VersionName;
+            Sidebar.SetPendingSelfUpdate(pendingVersion);
+            if (pendingVersion is not null && AvaloniaAutoUpdater.IsInstallOnQuitRequested && UpdatesBanner.IsOpen)
+                ShowSelfUpdateBanner(pendingVersion);
+        };
 
         AvaloniaAutoUpdater.StatusChanged += status => Dispatcher.UIThread.Post(() =>
         {
@@ -545,10 +625,12 @@ public partial class MainWindowViewModel : ViewModelBase
             if (e.NewItems is not null)
                 foreach (OperationViewModel vm in e.NewItems)
                     AddToBatch(vm.Operation);
+            WatchOperations();
             OperationsPanelVisible = Operations.Count > 0;
             OnPropertyChanged(nameof(OperationsHeaderText));
             OnPropertyChanged(nameof(HasFailedOperations));
             OnPropertyChanged(nameof(ShowFailedOperationBadge));
+            ShutdownController.OnOperationsChanged();
         };
 
         if (OperatingSystem.IsWindows() && CoreTools.IsAdministrator() && !Settings.Get(Settings.K.AlreadyWarnedAboutAdmin))
@@ -709,7 +791,7 @@ public partial class MainWindowViewModel : ViewModelBase
     // ─── Extensions ──────────────────────────────────────────────────────────
 
     // Lives while the feature is on, so automatic checks and the sidebar badge run with the page closed.
-    private void StartGitRepositories()
+    internal AppExtensionSession StartGitRepositories()
     {
         var gitRepositories = GitRepositories = new GitRepositoriesViewModel();
         gitRepositories.PropertyChanged += (_, e) =>
@@ -722,23 +804,41 @@ public partial class MainWindowViewModel : ViewModelBase
                 Sidebar.SetNavItemLoading(PageType.GitRepositories, gitRepositories.IsBusy);
         };
         _ = gitRepositories.InitializeAsync();
+        return new(() => new GitRepositoriesPage(gitRepositories), () =>
+        {
+            gitRepositories.Stop();
+            GitRepositories = null;
+        });
     }
 
     /// <summary>Turns Git Repositories on or off without a restart: its sidebar entry, badge and automatic checks.</summary>
     public void SetGitRepositoriesEnabled(bool enabled)
-    {
-        if (enabled && GitRepositories is null)
-            StartGitRepositories();
-        // Off first, so leaving the page cannot pick it again as the startup page.
-        Sidebar.GitRepositoriesEnabled = enabled;
-        if (enabled || GitRepositories is not { } gitRepositories)
-            return;
+        => SetExtensionEnabled(PageType.GitRepositories, enabled);
 
-        if (_currentPage == PageType.GitRepositories)
-            LoadDefaultPage();
-        gitRepositories.Stop();
-        GitRepositories = null;
-        _gitRepositoriesPage = null;
+    public void SetExtensionEnabled(PageType page, bool enabled)
+    {
+        var extension = AppExtensions.All.First(extension => extension.Page == page);
+        Sidebar.SetExtensionEnabled(page, enabled);
+        if (enabled)
+        {
+            if (!_extensions.ContainsKey(page))
+            {
+                var session = _extensions[page] = extension.Start(this);
+                _ = session.CheckForUpdatesAsync();
+            }
+        }
+
+        else if (_extensions.Remove(page, out var session))
+        {
+            if (_currentPage == page) LoadDefaultPage();
+            session.Stop();
+        }
+    }
+
+    public void StopExtensions()
+    {
+        foreach (var session in _extensions.Values) session.Stop();
+        _extensions.Clear();
     }
 
     // ─── Navigation ──────────────────────────────────────────────────────────
@@ -752,7 +852,7 @@ public partial class MainWindowViewModel : ViewModelBase
             "bundles" => PageType.Bundles,
             "catalog" when Sidebar.SoftwareCatalogEnabled => PageType.Catalog,
             "catalog-editor" when Sidebar.CatalogEditorEnabled => PageType.CatalogEditor,
-            "git-repositories" when Sidebar.GitRepositoriesEnabled => PageType.GitRepositories,
+            var id when AppExtensions.All.FirstOrDefault(extension => extension.Id == id && extension.IsEnabled) is { } extension => extension.Page,
             "settings" => PageType.Settings,
             // A usable admin-curated catalog is the simplest starting point, so it wins over the default pages.
             _ when Sidebar.HasUsableCatalog => PageType.Catalog,
@@ -778,8 +878,7 @@ public partial class MainWindowViewModel : ViewModelBase
             PageType.Catalog => CatalogPage ??= new SoftwareCatalogPage(),
             PageType.CatalogEditor => _catalogEditorPage ??= new CatalogEditorPage(
                 CatalogEditor ?? throw new InvalidOperationException("Catalog Editor is disabled.")),
-            PageType.GitRepositories => _gitRepositoriesPage ??= new GitRepositoriesPage(
-                GitRepositories ?? throw new InvalidOperationException("Git Repositories is disabled.")),
+            var extensionPage when _extensions.TryGetValue(extensionPage, out var extension) => extension.Page,
             PageType.Settings => SettingsPage ??= new SettingsBasePage(false),
             PageType.Managers => ManagersPage ??= new SettingsBasePage(true),
             PageType.OwnLog => UniGetUILogPage ??= new UniGetUILogPage(),
@@ -838,11 +937,11 @@ public partial class MainWindowViewModel : ViewModelBase
                 MainWindow.RuntimeNotificationLevel.Error);
             return false;
         }
-        if (newPage_t is PageType.GitRepositories && !Sidebar.GitRepositoriesEnabled)
+        if (AppExtensions.All.FirstOrDefault(extension => extension.Page == newPage_t) is { IsEnabled: false } disabled)
         {
-            Logger.Warn("Git Repositories navigation was rejected because it is turned off.");
+            Logger.Warn($"{disabled.Name} navigation was rejected because it is turned off.");
             MainWindow.Instance?.ShowBanner(
-                CoreTools.Translate("Git Repositories is turned off"),
+                CoreTools.Translate("{0} is turned off", CoreTools.Translate(disabled.Name)),
                 CoreTools.Translate("Turn it on in Settings, under Extensions."),
                 MainWindow.RuntimeNotificationLevel.Error);
             return false;
@@ -935,6 +1034,7 @@ public partial class MainWindowViewModel : ViewModelBase
         PageType.Catalog => CoreTools.Translate("Software Catalog"),
         PageType.CatalogEditor => CoreTools.Translate("Catalog Editor"),
         PageType.GitRepositories => CoreTools.Translate("Git Repositories"),
+        PageType.AgentSkills => CoreTools.Translate("Agent Skills"),
         PageType.Settings => CoreTools.Translate("Settings"),
         PageType.Managers => CoreTools.Translate("Package Managers"),
         PageType.OwnLog => CoreTools.Translate("UniGetUI Log"),
@@ -1115,6 +1215,11 @@ public partial class MainWindowViewModel : ViewModelBase
             if (await NavigateToAsync(PageType.Updates))
                 MainWindow.Instance?.ShowFromTray();
         }
+        else if (string.Equals(action, NotificationArguments.ShowOnAgentSkillsTab, StringComparison.OrdinalIgnoreCase))
+        {
+            if (await NavigateToAsync(PageType.AgentSkills))
+                MainWindow.Instance?.ShowFromTray();
+        }
         else if (string.Equals(action, NotificationArguments.Show, StringComparison.OrdinalIgnoreCase))
         {
             MainWindow.Instance?.ShowFromTray();
@@ -1122,6 +1227,51 @@ public partial class MainWindowViewModel : ViewModelBase
         else if (string.Equals(action, NotificationArguments.ReleaseSelfUpdateLock, StringComparison.OrdinalIgnoreCase))
         {
             AvaloniaAutoUpdater.ReleaseLockForAutoupdate_Notification = true;
+        }
+        else if (string.Equals(action, NotificationArguments.ShowSelfUpdate, StringComparison.OrdinalIgnoreCase))
+        {
+            MainWindow.Instance?.ShowFromTray();
+            if (AvaloniaAutoUpdater.PendingUpdate is null)
+                _ = AvaloniaAutoUpdater.CheckAndInstallUpdatesAsync(autoLaunch: false, manualCheck: true);
+            else
+                await ShowSelfUpdateDialogAsync();
+        }
+    }
+
+    private void ShowSelfUpdateBanner(string version)
+    {
+        UpdatesBanner.Severity = InfoBarSeverity.Success;
+        UpdatesBanner.Title = CoreTools.Translate("UniGetUI {0} is available", ReleaseNotesLinks.ShortVersion(version));
+        UpdatesBanner.Message = AvaloniaAutoUpdater.IsInstallOnQuitRequested
+            ? CoreTools.Translate("UniGetUI will update when you quit it")
+            : CoreTools.Translate("See what's new and choose when to update");
+        UpdatesBanner.ActionButtonText = CoreTools.Translate("What's new");
+        UpdatesBanner.ActionButtonCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(() => _ = ShowSelfUpdateDialogAsync());
+        UpdatesBanner.IsClosable = true;
+        UpdatesBanner.IsOpen = true;
+    }
+
+    private SelfUpdateDialog? _selfUpdateDialog;
+
+    public async Task ShowSelfUpdateDialogAsync()
+    {
+        if (_selfUpdateDialog is not null
+            || AvaloniaAutoUpdater.PendingUpdate is not { } pending
+            || MainWindow.Instance is not { } window)
+            return;
+
+        _selfUpdateDialog = new SelfUpdateDialog(pending);
+        try
+        {
+            await window.ShowDialogAndRestoreVisibilityAsync(_selfUpdateDialog);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+        }
+        finally
+        {
+            _selfUpdateDialog = null;
         }
     }
 

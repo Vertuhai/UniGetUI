@@ -1,6 +1,7 @@
 using UniGetUI.Interface.Enums;
 using UniGetUI.PackageEngine.Classes.Manager;
 using UniGetUI.PackageEngine.Interfaces;
+using UniGetUI.PackageEngine.Interfaces.ManagerProviders;
 using UniGetUI.PackageEngine.ManagerClasses.Classes;
 using UniGetUI.PackageEngine.ManagerClasses.Manager;
 using UniGetUI.PackageEngine.PackageClasses;
@@ -113,6 +114,11 @@ public sealed class TestPackageManager : PackageManager
         _findPackages = findPackages;
     }
 
+    internal void SetOperationHelper(IPackageOperationHelper helper)
+    {
+        OperationHelper = helper;
+    }
+
     public void SetAvailableUpdates(Func<IReadOnlyList<Package>> getAvailableUpdates)
     {
         _getAvailableUpdates = getAvailableUpdates;
@@ -133,6 +139,17 @@ public sealed class TestPackageManager : PackageManager
 
     public Task RunMaintenanceCommandForTestAsync(string fileName, string arguments) =>
         RunMaintenanceCommandAsync(fileName, arguments);
+
+    public bool? CanUpdateToExactVersionOverride { get; set; }
+
+    public override bool CanUpdateToExactVersion => CanUpdateToExactVersionOverride ?? base.CanUpdateToExactVersion;
+
+    public Func<IPackage, string, bool?>? UpdateTargetEligibility { get; set; }
+
+    protected override bool? IsEligibleUpdateTarget(IPackage update, string version) =>
+        UpdateTargetEligibility is { } eligibility
+            ? eligibility(update, version)
+            : base.IsEligibleUpdateTarget(update, version);
 
     public override bool InstallerUrlFollowsPackageVersion => _installerUrlFollowsPackageVersion;
 
