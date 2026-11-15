@@ -13,7 +13,7 @@ Solution entry points:
 The codebase follows a **layered, modular structure** with ~40 projects:
 
 - **`UniGetUI.Avalonia/`** - Avalonia entry point, AXAML pages, controls, and app shell (`Program.cs`, `Views/MainWindow.axaml`)
-- **`SharedAssets/`** - shared app icons, symbols, splash images, and utility scripts used by packaging
+- **`SharedAssets/`** - shared app icons, symbols, and utility scripts used by packaging
 - **`UniGetUI.Core.*`** - Shared infrastructure: `Logger`, `Settings`, `Tools` (includes `CoreTools.Translate()`), `IconEngine`, `LanguageEngine`
 - **`UniGetUI.PackageEngine.Interfaces`** - Contracts: `IPackageManager`, `IPackage`, `IManagerSource`, `IPackageDetails`
 - **`UniGetUI.PackageEngine.PackageManagerClasses`** - Base implementations: `PackageManager` (abstract), `Package`, helpers (`BasePkgDetailsHelper`, `BasePkgOperationHelper`, `BaseSourceHelper`)
@@ -244,12 +244,16 @@ So the comparison is per-manager, not global. `IPackageManager.CompareVersions(a
 usual negative/zero/positive, or `null` when two versions cannot be meaningfully compared:
 
 - **Default** (`PackageManager.CompareVersions`) - the numeric comparison above. Used by Scoop,
-  WinGet, Apt, Dnf, Pacman, Homebrew, vcpkg, Snap and Flatpak.
+  WinGet, Apt, Dnf, Homebrew, vcpkg, Snap and Flatpak.
 - **`SemanticVersion`** in `UniGetUI.Core.Tools` - SemVer 2.0 with NuGet's fourth numeric segment
   allowed. Used by `BaseNuGet` (so Chocolatey, .NET Tool, Windows PowerShell and PowerShell 7),
   npm, Bun and Cargo.
 - **`PythonVersion`** in `UniGetUI.Core.Tools` - PEP 440, matching Python's packaging library.
   Used by Pip.
+- **`AlpmVersion`** in the Pacman manager project - a port of libalpm's `alpm_pkg_vercmp`
+  (epoch, then version and release through rpmvercmp), so `1.0.1-1` is newer than `1.0-2` and an
+  epoch outranks any version. Used by Pacman and AUR. It accepts every string, so it never falls
+  back to the default.
 
 Each override falls back to the base implementation when its own parser rejects the input, so an
 unparseable version behaves exactly as it did before.
@@ -303,8 +307,10 @@ dotnet publish src/UniGetUI.Avalonia/UniGetUI.Avalonia.csproj /p:Configuration=R
 - Self-contained, publish-trimmed (partial), Windows App SDK self-contained
 - Tests use **xUnit** (`[Fact]`, `Assert.*`)
 
-The `.NET Tests` workflow runs the Windows build/tests and the full-trim NativeAOT publish
-in parallel jobs. `test-codebase` is the aggregate gate and requires both to succeed.
+The `.NET Tests` workflow runs the Windows build/tests, the full-trim NativeAOT publish and,
+on Ubuntu, the Linux and macOS self-update tests (`test-linux-self-update`, which the Windows
+job reports as skipped) in parallel jobs. `test-codebase` is the aggregate gate and requires
+all three to succeed.
 The test job builds once with two MSBuild nodes and runs the complete suite with
 `--no-build /m:1`; keep test hosts serial because suites share on-disk state. NativeAOT
 already checks full trimming, so do not add a second warning-only full-trim publish.

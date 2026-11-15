@@ -118,6 +118,14 @@
       <Platform Solution="*|arm64" Project="arm64" />
       <Platform Solution="*|x64" Project="x64" />
     </Project>
+    <Project Path="UniGetUI.Extensions.Xcode/UniGetUI.Extensions.Xcode.csproj">
+      <Platform Solution="*|arm64" Project="arm64" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="UniGetUI.Extensions.Xcode.Tests/UniGetUI.Extensions.Xcode.Tests.csproj">
+      <Platform Solution="*|arm64" Project="arm64" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
   </Folder>
   <Folder Name="/UniGetUI.Interface.Enums/">
     <Project Path="UniGetUI.Interface.Enums/UniGetUI.Interface.Enums.csproj">
@@ -253,6 +261,12 @@
   </Folder>
   <Folder Name="/UniGetUI.PackageEngine.Managers.Pacman/">
     <Project Path="UniGetUI.PackageEngine.Managers.Pacman/UniGetUI.PackageEngine.Managers.Pacman.csproj">
+      <Platform Solution="*|arm64" Project="arm64" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+  </Folder>
+  <Folder Name="/UniGetUI.PackageEngine.Managers.Aur/">
+    <Project Path="UniGetUI.PackageEngine.Managers.Aur/UniGetUI.PackageEngine.Managers.Aur.csproj">
       <Platform Solution="*|arm64" Project="arm64" />
       <Platform Solution="*|x64" Project="x64" />
     </Project>
