@@ -50,6 +50,7 @@ public enum PageType
     ManagerHealth,
     AgentSkills,
     Xcode,
+    Drivers,
 }
 
 public partial class MainWindow : Window
@@ -209,6 +210,7 @@ public partial class MainWindow : Window
     public bool CatalogEditorEnabled => ViewModel.Sidebar.CatalogEditorEnabled;
     public bool GitRepositoriesEnabled => ViewModel.Sidebar.GitRepositoriesEnabled;
     public GitRepositoriesViewModel? GitRepositories => ViewModel.GitRepositories;
+    public DriversViewModel? Drivers => ViewModel.Drivers;
     public void SetGitRepositoriesEnabled(bool enabled) => ViewModel.SetGitRepositoriesEnabled(enabled);
     public void SetExtensionEnabled(PageType page, bool enabled) => ViewModel.SetExtensionEnabled(page, enabled);
 #if UNIGETUI_XCODE_EXTENSION
@@ -255,7 +257,9 @@ public partial class MainWindow : Window
         Resized += (_, _) => _ = SaveGeometryAsync();
         ModalLayer.SizeChanged += (_, _) => UpdateModalSurfaceSize();
         PositionChanged += (_, _) => _ = SaveGeometryAsync();
-        this.GetObservable(WindowStateProperty).SubscribeValue(state => { UpdateOnScreenState(); _ = SaveGeometryAsync(); });
+        Activated += (_, _) => SetFocusedCaretVisible(true);
+        Deactivated += (_, _) => SetFocusedCaretVisible(false);
+        this.GetObservable(WindowStateProperty).SubscribeValue(state => { SyncShowWindowState(state); UpdateOnScreenState(); _ = SaveGeometryAsync(); });
         this.GetObservable(IsVisibleProperty).SubscribeValue(_ => UpdateOnScreenState());
 
         _trayService = new TrayService(this);
@@ -2387,8 +2391,36 @@ public partial class MainWindow : Window
 
     public void UpdateSystemTrayStatus() => _trayService?.UpdateStatus();
 
+    // A blinking text caret keeps the whole render loop running (about 30 frames a second), and
+    // UniGetUI opens with the caret in the search box, so a window left open behind other apps
+    // never went idle. Nobody types in a window that is not the active one, so its caret is
+    // hidden until the window is active again, as native Windows text boxes do.
+    private void SetFocusedCaretVisible(bool visible)
+    {
+        if (FocusManager?.GetFocusedElement() is not TextBox box)
+            return;
+
+        var presenter = box.GetVisualDescendants().OfType<global::Avalonia.Controls.Presenters.TextPresenter>().FirstOrDefault();
+        if (presenter is null)
+            return;
+
+        if (visible)
+            presenter.ShowCaret();
+        else
+            presenter.HideCaret();
+    }
+
     private void UpdateOnScreenState()
-        => _isOnScreen = IsVisible && WindowState != WindowState.Minimized;
+    {
+        _isOnScreen = IsVisible && WindowState != WindowState.Minimized;
+        BackgroundEfficiencyMode.Refresh();
+    }
+
+    private void SyncShowWindowState(WindowState state)
+    {
+        if (OperatingSystem.IsWindows() && state is WindowState.Normal or WindowState.Maximized)
+            WindowState = state;
+    }
 
     public void ShowRuntimeNotification(string title, string message, RuntimeNotificationLevel level, string? launchAction = null) =>
         ShowBanner(title, message, level, launchAction);
