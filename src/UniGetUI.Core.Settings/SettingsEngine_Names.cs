@@ -62,6 +62,7 @@ public static partial class Settings
         PreferredTheme,
         StartupPage,
         WindowGeometry,
+        WindowNormalGeometry,
         IgnoredUpdatesWindowSize,
         ChangeBackupFileName,
         MaxLocalBackupCount,
@@ -170,6 +171,7 @@ public static partial class Settings
         NavigationPageOrder,
         QuitAfterAutomaticUpdates,
         QuitWhenNothingToInstall,
+        QuitEvenWhenWindowIsOpen,
         InstallUniGetUIUpdatesWhenIdle,
         // NOTE: Set this to true to delegate package operations to Devolutions Agent broker
         // instead of using local UAC elevation. Change default here when ready for production.
@@ -253,6 +255,7 @@ public static partial class Settings
             K.PreferredTheme => "PreferredTheme",
             K.StartupPage => "StartupPage",
             K.WindowGeometry => "WindowGeometry",
+            K.WindowNormalGeometry => "WindowNormalGeometry",
             K.IgnoredUpdatesWindowSize => "IgnoredUpdatesWindowSize",
             K.ChangeBackupFileName => "ChangeBackupFileName",
             K.MaxLocalBackupCount => "MaxLocalBackupCount",
@@ -361,6 +364,7 @@ public static partial class Settings
             K.NavigationPageOrder => "NavigationPageOrder",
             K.QuitAfterAutomaticUpdates => "QuitAfterAutomaticUpdates",
             K.QuitWhenNothingToInstall => "QuitWhenNothingToInstall",
+            K.QuitEvenWhenWindowIsOpen => "QuitEvenWhenWindowIsOpen",
             K.InstallUniGetUIUpdatesWhenIdle => "InstallUniGetUIUpdatesWhenIdle",
             K.UseAgentBroker => "UseAgentBroker",
             K.SkippedUniGetUIVersion => "SkippedUniGetUIVersion",
