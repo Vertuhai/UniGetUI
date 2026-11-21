@@ -380,7 +380,7 @@ public partial class PackagesPageViewModel : ViewModelBase
             Loader_StartedLoading(this, EventArgs.Empty);
         else
         {
-            Loader_FinishedLoading(this, EventArgs.Empty);
+            Loader_FinishedLoading(this, PackageLoadFinishedEventArgs.For(Loader.LoadIsListingOnly));
             FilterPackages();
         }
         Loader_PackagesChanged(this, new(false, [], []));
@@ -536,6 +536,10 @@ public partial class PackagesPageViewModel : ViewModelBase
         await dialog.ShowDialog(owner);
     }
 
+    // The installed loader keeps scope-distinct installations apart, so its rows must be matched the same way.
+    private long RowIdentity(IPackage package) =>
+        Loader is InstalledPackagesLoader ? package.GetInstalledIdentityHash() : package.GetVersionedHash();
+
     // ─── Loader events ────────────────────────────────────────────────────────
     private void Loader_PackagesChanged(object? sender, PackagesChangedEvent e)
     {
@@ -550,14 +554,14 @@ public partial class PackagesPageViewModel : ViewModelBase
             var added = new List<PackageWrapper>();
             foreach (var pkg in e.AddedPackages)
             {
-                if (_wrappedPackages.Any(w => w.Package.GetVersionedHash() == pkg.GetVersionedHash())) continue;
+                if (_wrappedPackages.Any(w => RowIdentity(w.Package) == RowIdentity(pkg))) continue;
                 var wrapper = new PackageWrapper(pkg, this);
                 _wrappedPackages.Add(wrapper);
                 added.Add(wrapper);
                 AddPackageToSourcesList(pkg);
             }
             var toRemove = _wrappedPackages
-                .Where(w => e.RemovedPackages.Any(r => r.GetVersionedHash() == w.Package.GetVersionedHash()))
+                .Where(w => e.RemovedPackages.Any(r => RowIdentity(r) == RowIdentity(w.Package)))
                 .ToList();
             foreach (var wrapper in toRemove) { wrapper.Dispose(); _wrappedPackages.Remove(wrapper); }
 
@@ -582,13 +586,23 @@ public partial class PackagesPageViewModel : ViewModelBase
         if (!Loader.IsLoading) StartRowValuePreload();
     }
 
-    private void Loader_FinishedLoading(object? sender, EventArgs e)
+    /// <summary>
+    /// Whether the load <see cref="PackagesLoaded"/> last reported was a listing-only one (a remote
+    /// rescan), captured when it finished so a load started since cannot change the answer.
+    /// </summary>
+    public bool LastLoadWasListingOnly { get; private set; }
+
+    private void Loader_FinishedLoading(object? sender, PackageLoadFinishedEventArgs e) =>
+        OnLoaderFinished(e.ListingOnly);
+
+    private void OnLoaderFinished(bool listingOnly)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(() => Loader_FinishedLoading(sender, e));
+            Dispatcher.UIThread.Post(() => OnLoaderFinished(listingOnly));
             return;
         }
+        LastLoadWasListingOnly = listingOnly;
         IsLoading = Loader.IsLoading;
         _lastLoadTime = DateTime.Now;
         // Also called from the constructor before any load has run: only a finished load counts

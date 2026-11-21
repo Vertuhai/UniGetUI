@@ -334,6 +334,9 @@ namespace UniGetUI.PackageEngine.Managers.WingetManager
         public bool HonorsIntegrityCheckSkipWhenElevated =>
             SelectedCliToolKind is WinGetCliToolKind.BundledPinget;
 
+        protected override bool IsUpdateSuppressed(UniGetUI.PackageEngine.Interfaces.IPackage update) =>
+            WinGetPkgOperationHelper.IsStuckUpgradeLoop(update);
+
         public override bool CanUpdateToExactVersion =>
             SelectedCliToolKind is WinGetCliToolKind.SystemWinGet
             && Capabilities.SupportsCustomVersions
@@ -1116,6 +1119,8 @@ namespace UniGetUI.PackageEngine.Managers.WingetManager
                 Logger.Error(ex);
             }
         }
+
+        protected override bool IndexRefreshUpdatesOnlyCatalogues => true;
 
         public override void RefreshPackageIndexes()
         {

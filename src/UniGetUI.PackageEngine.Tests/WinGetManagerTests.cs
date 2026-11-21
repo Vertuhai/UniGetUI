@@ -1392,6 +1392,177 @@ public sealed class WinGetManagerTests : IDisposable
         Assert.Equal(1, snapshots);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NativeWinGetListingOnlyCallsDoNotReuseAnEarlierSnapshot(bool updates)
+    {
+        WinGet.MarkSourceIndexRefreshed();
+        int snapshots = 0;
+        var helper = new NativeWinGetHelper(
+            new TestableWinGet(),
+            systemCliHelperFactory: null,
+            skipInitialization: true,
+            localPackagesProvider: () =>
+            {
+                snapshots++;
+                return [];
+            }
+        );
+        Func<IReadOnlyList<Package>> list = updates
+            ? helper.GetAvailableUpdates_UnSafe
+            : helper.GetInstalledPackages_UnSafe;
+
+        Assert.Empty(list());
+        using var scope = PackageListingScope.EnterListingOnly();
+        Assert.Empty(list());
+        Assert.Empty(list());
+
+        Assert.Equal(3, snapshots);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NativeWinGetSkippedPackagesMarkTheListingIncompleteWithoutCliFallback(bool updates)
+    {
+        WinGet.MarkSourceIndexRefreshed();
+        int fallbacks = 0;
+        var helper = new NativeWinGetHelper(
+            new TestableWinGet(),
+            systemCliHelperFactory: _ =>
+            {
+                fallbacks++;
+                throw new InvalidOperationException("A skipped row must not trigger CLI recovery.");
+            },
+            skipInitialization: true,
+            localPackagesProvider: () => [null!, null!]
+        );
+        Func<IReadOnlyList<Package>> list = updates
+            ? helper.GetAvailableUpdates_UnSafe
+            : helper.GetInstalledPackages_UnSafe;
+        List<Exception> failures = [];
+
+        using var tracking = PackageListingScope.TrackFailures(failures.Add);
+        Assert.Empty(list());
+        Assert.Equal(2, failures.Count);
+        Assert.All(failures, error => Assert.IsType<NullReferenceException>(error));
+
+        failures.Clear();
+        using var scope = PackageListingScope.EnterListingOnly();
+        var failure = Assert.Throws<NullReferenceException>(() => list());
+        Assert.Same(failure, Assert.Single(failures));
+        Assert.Equal(0, fallbacks);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NativeWinGetSuccessfulCatalogFallbackReplaysIncompleteStateForEveryListing(bool skipUnavailableCatalog)
+    {
+        WinGet.MarkSourceIndexRefreshed();
+        int snapshots = 0;
+        int cliFallbacks = 0;
+        List<string> attempts = [];
+        var helper = new NativeWinGetHelper(
+            new TestableWinGet(),
+            systemCliHelperFactory: _ =>
+            {
+                cliFallbacks++;
+                throw new InvalidOperationException("An omitted catalog must not trigger CLI recovery.");
+            },
+            skipInitialization: true,
+            localPackagesProvider: () =>
+            {
+                snapshots++;
+                string[] configuredCatalogs = skipUnavailableCatalog ? ["offline", "winget"] : ["winget"];
+                var catalogs = NativeWinGetHelper.SelectReachableCatalogs(
+                    configuredCatalogs,
+                    static catalog => catalog,
+                    static catalog => catalog != "offline"
+                );
+                bool found = NativeWinGetHelper.FindWithFallbacks(
+                    catalogs,
+                    static _ => false,
+                    selected =>
+                    {
+                        attempts.Add(selected.Count == 0 ? "(installed)" : string.Join("+", selected));
+                        return selected.Count == 0;
+                    },
+                    static result => result
+                );
+                Assert.True(found);
+                return [];
+            }
+        );
+        int expectedFailures = skipUnavailableCatalog ? 2 : 1;
+        List<Exception> firstFailures = [];
+        using (PackageListingScope.TrackFailures(firstFailures.Add))
+            Assert.Empty(helper.GetInstalledPackages_UnSafe());
+        Assert.Equal(expectedFailures, firstFailures.Count);
+        Assert.Equal(["winget", "(installed)"], attempts);
+
+        List<Exception> cachedFailures = [];
+        using (PackageListingScope.TrackFailures(cachedFailures.Add))
+            Assert.Empty(helper.GetAvailableUpdates_UnSafe());
+        Assert.Equal(firstFailures, cachedFailures);
+        Assert.Equal(1, snapshots);
+        Assert.Equal(["winget", "(installed)"], attempts);
+
+        List<Exception> strictFailures = [];
+        using var tracking = PackageListingScope.TrackFailures(strictFailures.Add);
+        using var scope = PackageListingScope.EnterListingOnly();
+        var failure = Assert.Throws<InvalidOperationException>(helper.GetAvailableUpdates_UnSafe);
+        Assert.Same(failure, Assert.Single(strictFailures));
+        Assert.Equal(2, snapshots);
+        Assert.Equal(skipUnavailableCatalog ? 2 : 3, attempts.Count);
+        Assert.Equal(0, cliFallbacks);
+    }
+
+    [Fact]
+    public void NativeWinGetUnavailableCatalogKeepsNormalCliFallbackButFailsListingOnly()
+    {
+        var manager = new TestableWinGet();
+        var expectedPackage = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("Contoso.Tool")
+            .WithVersion("1.2.3")
+            .Build();
+        int cliListings = 0;
+        var fallback = new TestWinGetManagerHelper
+        {
+            GetInstalledPackagesHandler = () =>
+            {
+                cliListings++;
+                return [expectedPackage];
+            },
+        };
+        var helper = new NativeWinGetHelper(
+            manager,
+            systemCliHelperFactory: _ => fallback,
+            skipInitialization: true,
+            localPackagesProvider: () =>
+            {
+                NativeWinGetHelper.SelectReachableCatalogs(
+                    ["offline"],
+                    static catalog => catalog,
+                    static _ => false
+                );
+                return [];
+            }
+        );
+        List<Exception> failures = [];
+        using var tracking = PackageListingScope.TrackFailures(failures.Add);
+        Assert.Same(expectedPackage, Assert.Single(helper.GetInstalledPackages_UnSafe()));
+        Assert.Single(failures);
+
+        failures.Clear();
+        using var scope = PackageListingScope.EnterListingOnly();
+        var failure = Assert.Throws<InvalidOperationException>(helper.GetInstalledPackages_UnSafe);
+        Assert.Same(failure, Assert.Single(failures));
+        Assert.Equal(1, cliListings);
+    }
+
     [Fact]
     public void NativeWinGetHelperTakesAFreshSnapshotOnceTheInstalledPackagesAreInvalidated()
     {
@@ -1469,8 +1640,10 @@ public sealed class WinGetManagerTests : IDisposable
     {
         List<string> attempts = [];
         List<string> retries = [];
+        List<Exception> failures = [];
         string[] catalogs = catalogList.Split(',');
 
+        using var tracking = PackageListingScope.TrackFailures(failures.Add);
         string result = NativeWinGetHelper.FindWithFallbacks(
             catalogs,
             static catalog => catalog == "msstore",
@@ -1487,6 +1660,7 @@ public sealed class WinGetManagerTests : IDisposable
         Assert.Equal(expectedAttempts, string.Join("|", attempts));
         Assert.Equal(attempts[^1], result);
         Assert.Equal(attempts.Count - 1, retries.Count);
+        Assert.Equal(retries.Count, failures.Count);
     }
 
     [Theory]
@@ -2231,6 +2405,40 @@ public sealed class WinGetManagerTests : IDisposable
                 OperationType.Update
             )
         );
+    }
+
+    [Fact]
+    public void WinGetStopsOfferingARefusedUpdateWithinASkippedMajor()
+    {
+        var manager = new FixedVersionsWinGet(["2.0.0", "1.1.0", "1.0.0"]);
+        SetCliToolKind(manager, WinGetCliToolKind.SystemWinGet);
+        var listed = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("Contoso.RefusedWithinMajor")
+            .WithVersion("1.0.0")
+            .WithNewVersion("2.0.0")
+            .Build();
+        InstallOptionsFactory.SaveForPackage(
+            new InstallOptions { OverridesNextLevelOpts = true, SkipMajorUpdates = true },
+            listed
+        );
+
+        var offered = manager.ResolveSkippedMajorUpdate(listed);
+        Assert.NotNull(offered);
+        Assert.Equal("1.1.0", offered.NewVersionString);
+        Assert.True(offered.OverridenOptions.PinUpdateToNewVersion);
+
+        var veredict = manager.OperationHelper.GetResult(
+            offered,
+            OperationType.Update,
+            [],
+            unchecked((int)0x8A150114)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.False(WinGetPkgOperationHelper.IsStuckUpgradeLoop(listed));
+        Assert.Null(manager.ResolveSkippedMajorUpdate(listed));
+        Assert.False(listed.OverridenOptions.PinUpdateToNewVersion);
     }
 
     [Theory]
@@ -4365,6 +4573,112 @@ public sealed class WinGetManagerTests : IDisposable
         Assert.Equal(defaultMessage, operation.Metadata.FailureMessage);
         Assert.False(operation.FailedBecauseApplicationRunning);
         Assert.False(PackageOperation.CanRetryClosingRunningApp(operation));
+        Assert.False(PackageOperation.CanIgnoreUpdatesAfterFailure(operation));
+    }
+
+    [Fact]
+    public void WinGetRecognisesOnlyTheUpgradeNotSupportedCode()
+    {
+        Assert.True(WinGetPkgOperationHelper.ReportedUpdateNotSupported(unchecked((int)0x8A150114)));
+        Assert.False(WinGetPkgOperationHelper.ReportedUpdateNotSupported(unchecked((int)0x8A150014)));
+        Assert.False(WinGetPkgOperationHelper.ReportedUpdateNotSupported(0));
+    }
+
+    [Fact]
+    public async Task WinGetUpdateNotSupportedExplainsTheFailureAndOffersToIgnoreUpdates()
+    {
+        var manager = new WinGet();
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("Contoso.SelfUpdatingTool")
+            .WithName("MSYS2")
+            .WithVersion("20260611")
+            .WithNewVersion("20260927")
+            .Build();
+        using var operation = new VeredictProbingUpdateOperation(package, new InstallOptions());
+        string defaultMessage = operation.Metadata.FailureMessage;
+
+        var veredict = await operation.ProbeProcessVeredict(
+            unchecked((int)0x8A150114),
+            [
+                "Found MSYS2 [Contoso.SelfUpdatingTool] Version 20260927",
+                "The package cannot be upgraded using winget. Please use the method provided by the publisher for upgrading this package.",
+            ]
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.NotEqual(defaultMessage, operation.Metadata.FailureMessage);
+        Assert.Contains("MSYS2", operation.Metadata.FailureMessage);
+        Assert.False(operation.Metadata.FailureMessage.EndsWith('.'));
+        Assert.True(operation.FailedBecauseUpdateNotSupported);
+        Assert.True(PackageOperation.CanIgnoreUpdatesAfterFailure(operation));
+        Assert.False(PackageOperation.IsWorthRetryingInBulk(operation));
+        Assert.False(operation.FailedBecauseApplicationRunning);
+        Assert.True(WinGetPkgOperationHelper.IsStuckUpgradeLoop(package));
+
+        veredict = await operation.ProbeProcessVeredict(26, []);
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.Equal(defaultMessage, operation.Metadata.FailureMessage);
+        Assert.False(PackageOperation.CanIgnoreUpdatesAfterFailure(operation));
+        Assert.True(PackageOperation.IsWorthRetryingInBulk(operation));
+    }
+
+    [Fact]
+    public void WinGetHidesARefusedUpdateOnlyUntilANewerVersionIsOffered()
+    {
+        var manager = new WinGet();
+        var refused = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("Contoso.RefusedUpdate")
+            .WithVersion("20260611")
+            .WithNewVersion("20260927")
+            .Build();
+        var newer = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("Contoso.RefusedUpdate")
+            .WithVersion("20260611")
+            .WithNewVersion("20261025")
+            .Build();
+        Assert.False(WinGetPkgOperationHelper.IsStuckUpgradeLoop(refused));
+
+        var veredict = manager.OperationHelper.GetResult(
+            refused,
+            OperationType.Update,
+            [],
+            unchecked((int)0x8A150114)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.True(WinGetPkgOperationHelper.IsStuckUpgradeLoop(refused));
+        Assert.False(WinGetPkgOperationHelper.IsStuckUpgradeLoop(newer));
+    }
+
+    [Fact]
+    public void WinGetDoesNotHideAnythingWhenAnInstallIsRefused()
+    {
+        var manager = new WinGet();
+        var package = new PackageBuilder()
+            .WithManager(manager)
+            .WithId("Contoso.RefusedInstall")
+            .WithVersion("20260611")
+            .WithNewVersion("20260927")
+            .Build();
+
+        var veredict = manager.OperationHelper.GetResult(
+            package,
+            OperationType.Install,
+            [],
+            unchecked((int)0x8A150114)
+        );
+
+        OperationAssert.HasVeredict(veredict, OperationVeredict.Failure);
+        Assert.False(WinGetPkgOperationHelper.IsStuckUpgradeLoop(package));
+        Assert.Null(
+            manager.OperationHelper.GetFailureExplanation(package, OperationType.Install, [], unchecked((int)0x8A150114))
+        );
+        Assert.True(manager.OperationHelper.UpdateWasRefusedByPublisher([], unchecked((int)0x8A150114)));
+        Assert.False(manager.OperationHelper.UpdateWasRefusedByPublisher([], unchecked((int)0x8A150014)));
     }
 
     [Fact]
@@ -4481,6 +4795,14 @@ public sealed class WinGetManagerTests : IDisposable
             .GetProperty(nameof(WinGet.SelectedCliToolKind), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetSetMethod(nonPublic: true)!
             .Invoke(manager, [kind]);
+    }
+
+    private sealed class FixedVersionsWinGet(IReadOnlyList<string> versions) : WinGet
+    {
+        protected override IReadOnlyList<string> ListVersionsForUpdateSelection(
+            IPackage update,
+            bool includePreReleases
+        ) => versions;
     }
 
     private sealed class TestableWinGet : WinGet

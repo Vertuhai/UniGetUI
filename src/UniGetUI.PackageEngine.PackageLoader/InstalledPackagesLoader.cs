@@ -21,17 +21,24 @@ namespace UniGetUI.PackageEngine.PackageLoader
             Instance = this;
         }
 
+        protected override bool DistinguishReportedScopes => true;
+
         protected override Task<bool> IsPackageValid(IPackage package)
         {
             return Task.FromResult(true);
         }
 
-        protected override bool DidManagerReportFailure(IPackageManager manager)
-            => manager.LastInstalledListingFailed;
-
         protected override IReadOnlyList<IPackage> LoadPackagesFromManager(IPackageManager manager)
         {
             return manager.GetInstalledPackages();
+        }
+
+        protected override IReadOnlyList<IPackage> LoadPackagesFromManager(
+            IPackageManager manager,
+            out bool failed
+        )
+        {
+            return manager.GetInstalledPackages(out failed);
         }
 
         protected override async Task WhenAddingPackage(IPackage package)
@@ -50,7 +57,8 @@ namespace UniGetUI.PackageEngine.PackageLoader
 
         public async Task ReloadPackagesSilently()
         {
-            if (IsLoading)
+            TaskCompletionSource? completion = BeginExternalLoad();
+            if (completion is null)
             {
                 Logger.Debug($"[{this.GetType()}] Packages are already being loaded!!!");
                 return;
@@ -58,7 +66,6 @@ namespace UniGetUI.PackageEngine.PackageLoader
 
             try
             {
-                IsLoading = true;
                 InvokeStartedLoadingEvent();
 
                 List<Task<IReadOnlyList<IPackage>>> tasks = [];
@@ -110,13 +117,13 @@ namespace UniGetUI.PackageEngine.PackageLoader
                     }
                 }
 
-                IsLoading = false;
+                EndExternalLoad(completion);
                 InvokeFinishedLoadingEvent();
             }
             catch (Exception ex)
             {
                 Logger.Error(ex);
-                IsLoading = false;
+                EndExternalLoad(completion);
             }
         }
     }
