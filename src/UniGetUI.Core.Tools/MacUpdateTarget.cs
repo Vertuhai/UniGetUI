@@ -17,31 +17,48 @@ public static class MacUpdateTargetResolver
 
     // Arguments are passed positionally ($1=pid, $2=target, $3=new app, $4=update log,
     // $5=failure marker, $6=redacted target) so no path is ever interpolated into the script text.
+    // A leftover .old this user cannot delete (one owned by root) gets a unique backup name instead.
     public const string SwapScript = """
         pid="$1"; target="$2"; newapp="$3"; log="$4"; marker="$5"; shown="$6"
+        reason() { printf 'Update swap failed while %s: %s\n' "$1" "${2##*: }" >> "$log"; }
         i=0
         while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 150 ]; do sleep 0.2; i=$((i+1)); done
-        rm -rf "$target.old"
-        if mv "$target" "$target.old"; then
-          if mv "$newapp" "$target"; then
+        backup="$target.old"
+        rm -rf "$backup" 2>/dev/null
+        if [ -e "$backup" ] || [ -L "$backup" ]; then
+          printf 'Update swap could not delete %s.old, so the previous version is set aside under another name\n' "$shown" >> "$log"
+          backup="$(mktemp -d "$target.old.XXXXXX")" && rmdir "$backup" || backup=""
+        fi
+        run="$target"
+        if [ -z "$backup" ]; then
+          reason "choosing where to set the installed version aside" "no unused name was available"
+          printf '\n%s %s\n' "$marker" "$shown" >> "$log"
+        elif err=$(LC_ALL=C mv "$target" "$backup" 2>&1); then
+          if err=$(LC_ALL=C mv "$newapp" "$target" 2>&1); then
             xattr -dr com.apple.quarantine "$target" 2>/dev/null
-            rm -rf "$target.old"
+            rm -rf "$backup"
           else
+            reason "moving the new version into place" "$err"
             rm -rf "$target"
-            mv "$target.old" "$target"
+            if ! err=$(LC_ALL=C mv "$backup" "$target" 2>&1); then
+              reason "restoring the previous version, which was left in $shown${backup#"$target"}" "$err"
+              run="$backup"
+            fi
             printf '\n%s %s\n' "$marker" "$shown" >> "$log"
           fi
         else
+          reason "moving the installed version aside" "$err"
           printf '\n%s %s\n' "$marker" "$shown" >> "$log"
         fi
-        /usr/bin/open -na "$target"
+        # A backup has no .app name, so LaunchServices would not open it: start its executable instead.
+        if [ "$run" = "$target" ]; then /usr/bin/open -na "$target"; else "$run/Contents/MacOS/UniGetUI" >/dev/null 2>&1 & fi
         """;
 
-    // Runs as root for a bundle the user cannot replace ($1=target, $2=archive, $3=SHA-256, $4=pid).
-    // Installs only from a root-owned copy of the archive, re-hashed, so the user's staging is never trusted.
+    // Runs as root for a bundle the user cannot replace ($1=target, $2=archive, $3=SHA-256, $4=pid,
+    // $5=code signing requirement). Installs only a root-owned, re-hashed and re-verified copy.
     public const string ElevatedSwapScript = """
         set -e
-        target="$1"; archive="$2"; expected="$3"; pid="$4"
+        target="$1"; archive="$2"; expected="$3"; pid="$4"; requirement="$5"
         work="$(/usr/bin/mktemp -d /private/tmp/unigetui-update.XXXXXX)"
         trap 'rm -rf "$work"' EXIT
         /bin/cp "$archive" "$work/update.tar.gz"
@@ -53,9 +70,12 @@ public static class MacUpdateTargetResolver
         /bin/mkdir "$work/x"
         /usr/bin/tar -xzf "$work/update.tar.gz" -C "$work/x"
         newapp="$work/x/UniGetUI.app"
-        [ -d "$newapp" ] || newapp="$(/usr/bin/find "$work/x" -type d -name UniGetUI.app -prune -print | /usr/bin/head -n 1)"
-        if [ -z "$newapp" ] || [ ! -d "$newapp" ]; then
+        if [ -L "$newapp" ] || [ ! -d "$newapp" ]; then
           echo "The update archive does not contain UniGetUI.app." >&2
+          exit 1
+        fi
+        if [ -z "$requirement" ] || ! /usr/bin/codesign --verify --deep --strict -R="$requirement" "$newapp"; then
+          echo "The update is not signed by a trusted developer." >&2
           exit 1
         fi
         rm -rf "$target.old"
